@@ -1,0 +1,8 @@
+{
+  "chaos": { "graceTime": 12, "rampRate": 0.08, "maxMultiplier": 1.6, "decayOnKill": 0.6 },
+  "movementDefaults": { "acceleration": 800, "maxSpeed": 210, "friction": 0.94 },
+  "perMinigameOverrides": {
+    "explodingFruits": { "fuseTime": 2.6, "maxBombsCap": 3 },
+    "pepperToDie": { "juggernautDuration": 9 }
+  }
+}

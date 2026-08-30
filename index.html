@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Munchie Mayhem</title>
+  <meta name="description" content="Local party minigames &mdash; bounce, bomb, and chase your way to the crown." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles/main.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="hud"></div>
+    <canvas id="game-canvas" width="960" height="540"></canvas>
+    <div id="menu-screen" class="overlay"></div>
+    <div id="instruction-screen" class="overlay" style="display:none"></div>
+    <div id="results-screen" class="overlay" style="display:none"></div>
+    <div id="crash-screen" class="overlay" style="display:none"></div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

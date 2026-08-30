@@ -1,0 +1,265 @@
+:root {
+  --bg: #fdeecb;
+  --card-bg: #fffaf0;
+  --ink: #4a3222;
+  --accent: #ff6b57;
+  --accent-2: #4dd4ac;
+  --radius-lg: 20px;
+  --radius-md: 12px;
+  --shadow: 0 10px 30px rgba(74, 50, 34, 0.18);
+  --font-display: 'Baloo 2', system-ui, sans-serif;
+  --font-body: 'Nunito', system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top, #fff6e0, var(--bg));
+  font-family: var(--font-body);
+  color: var(--ink);
+}
+
+#app {
+  position: relative;
+  width: min(100vw, 1140px);
+  padding: 16px;
+}
+
+canvas#game-canvas {
+  display: block;
+  margin: 0 auto;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  background: var(--bg);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(74, 50, 34, 0.35);
+  backdrop-filter: blur(2px);
+}
+
+.menu-card,
+.instruction-card,
+.results-card {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 28px 32px;
+  width: min(90vw, 480px);
+  text-align: center;
+}
+
+h1 {
+  font-family: var(--font-display);
+  font-size: 2.2rem;
+  margin: 0 0 4px;
+  color: var(--accent);
+}
+
+h2 {
+  font-family: var(--font-display);
+}
+
+.subtitle {
+  margin: 0 0 20px;
+  opacity: 0.75;
+  font-size: 0.95rem;
+}
+
+.menu-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.menu-row label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  font-weight: 700;
+  gap: 4px;
+}
+
+.menu-row input,
+.menu-row select {
+  font: inherit;
+  font-size: 1rem;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 2px solid #f0d9b5;
+}
+
+#minigame-toggles {
+  border: 2px dashed #f0d9b5;
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+#minigame-toggles legend {
+  font-weight: 800;
+  padding: 0 6px;
+}
+
+.mg-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.95rem;
+}
+
+button {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  padding: 12px 28px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 6px 0 #d1442f;
+  transition: transform 0.05s ease;
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+button:active {
+  transform: translateY(4px);
+  box-shadow: 0 2px 0 #d1442f;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+.controls-hint {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: 14px;
+}
+
+.instruction-icon {
+  font-size: 2.6rem;
+}
+
+.instruction-card ul {
+  text-align: left;
+  padding-left: 20px;
+}
+
+.instruction-card li {
+  margin-bottom: 6px;
+}
+
+.ready-hint {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.results-card ol {
+  text-align: left;
+  padding-left: 24px;
+}
+
+.results-card.champion h2 {
+  color: var(--accent);
+  font-size: 1.6rem;
+}
+
+.crash-card {
+  width: min(90vw, 640px);
+  text-align: left;
+  border: 3px solid #c0392b;
+}
+
+.crash-card h2 {
+  color: #c0392b;
+  text-align: center;
+}
+
+.crash-card pre {
+  background: #2b2b2b;
+  color: #ffb4b4;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.crash-card button {
+  display: block;
+  margin: 0 auto;
+}
+
+#hud {
+  position: relative;
+  z-index: 5;
+  margin-bottom: 8px;
+}
+
+.hud-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--card-bg);
+  border-radius: 999px;
+  padding: 8px 18px;
+  box-shadow: var(--shadow);
+  font-family: var(--font-display);
+  flex-wrap: wrap;
+}
+
+.hud-title {
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.hud-timer {
+  font-weight: 800;
+}
+
+.hud-scores {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.hud-score {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #fff;
+  border: 2px solid var(--c, var(--accent));
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}

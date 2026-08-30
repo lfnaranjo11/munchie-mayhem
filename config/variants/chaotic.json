@@ -1,0 +1,9 @@
+{
+  "chaos": { "graceTime": 3, "rampRate": 0.35, "maxMultiplier": 3.5, "decayOnKill": 0.15 },
+  "movementDefaults": { "acceleration": 1100, "maxSpeed": 290, "friction": 0.9 },
+  "perMinigameOverrides": {
+    "organicDisposal": { "spawn": { "minInterval": 0.5, "maxInterval": 1.1 } },
+    "explodingFruits": { "maxBombsCap": 8, "fuseTime": 1.3 },
+    "pepperToDie": { "pepperIdleTimeout": 2 }
+  }
+}

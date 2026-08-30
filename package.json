@@ -1,0 +1,11 @@
+{
+  "name": "munchie-mayhem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Modular local-multiplayer food-party minigame engine, built for easy re-skinning, config-variant A/B testing, and a future move to real networked multiplayer.",
+  "scripts": {
+    "dev": "npx --yes serve . -l 5173",
+    "test": "node test/smoke.mjs"
+  }
+}
