@@ -23,8 +23,8 @@ export const defaultConfig = {
   // back, close enough that it stays a real scramble rather than a long
   // walk. Multiplied by chaos intensity on a fumble, so the throw gets
   // longer as the round heats up.
-  ejectDistanceMin: 0.25,
-  ejectDistanceMax: 0.33,
+  ejectDistanceMin: 0.55,
+  ejectDistanceMax: 0.90,
 };
 
 export function buildKingOfTheMealConfig(globalConfig) {
