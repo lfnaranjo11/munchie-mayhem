@@ -19,10 +19,17 @@ const PALETTE = ['#ff6b6b', '#4dd4ac', '#4d9de0', '#f4c150', '#c789e8', '#ff9f68
  * no idea the DOM exists.
  */
 export class TournamentManager extends EventBus {
-  constructor({ targetScore = 3, humanPlayers = 2, botCount = 2, enabledMinigames, seed, globalConfig }) {
+  constructor({ targetScore = 3, humanPlayers = 2, botCount = 2, enabledMinigames, seed, globalConfig, baseArena }) {
     super();
     this.targetScore = targetScore;
     this.globalConfig = globalConfig;
+
+    // The arena's shape is adapted to the player's screen (see
+    // src/core/arenaFit.js) and handed in by main.js. Falling back to the
+    // config reference arena keeps this class usable headlessly, with no
+    // viewport at all - which is exactly what test/smoke.mjs relies on.
+    this.baseArena = baseArena ?? { width: globalConfig.arena.width, height: globalConfig.arena.height };
+    this.humanPlayers = humanPlayers;
 
     const rootSeed = seed ?? Date.now();
     // One RNG sequences "which minigame, what per-round seed" (the
@@ -72,8 +79,8 @@ export class TournamentManager extends EventBus {
     const chaos = new ChaosDirector(this.globalConfig.chaos);
     const config = def.buildConfig(this.globalConfig);
     const arena = {
-      width: this.globalConfig.arena.width * (config.arenaScale ?? 1),
-      height: this.globalConfig.arena.height * (config.arenaScale ?? 1),
+      width: this.baseArena.width * (config.arenaScale ?? 1),
+      height: this.baseArena.height * (config.arenaScale ?? 1),
     };
 
     // Reset per-round player state and scatter everyone near the middle
@@ -149,6 +156,15 @@ export class TournamentManager extends EventBus {
   continueTournament() {
     if (this.phase === 'finished') return;
     this.startNextRound();
+  }
+
+  /**
+   * The first local human player, or null in a bots-only session. Used by
+   * the camera to decide who to follow when zoomed in - a bots-only or
+   * spectator session simply stays at the full-arena view.
+   */
+  getPrimaryLocalPlayer() {
+    return this.players.find((p) => !p.isBot && p.alive) ?? this.players.find((p) => !p.isBot) ?? null;
   }
 
   getHUDData() {

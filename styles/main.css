@@ -15,21 +15,53 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
+  /* dvh tracks the *dynamic* viewport, so the layout doesn't jump when
+     mobile browser chrome (URL bar) collapses mid-game. Falls back to the
+     vh line above on older browsers. */
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
   background: radial-gradient(circle at top, #fff6e0, var(--bg));
   font-family: var(--font-body);
   color: var(--ink);
+
+  /* Mobile hygiene: stop the page scrolling/bouncing under the player's
+     thumb while they're steering, kill the grey flash on tap, and stop
+     drags from selecting UI text. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 #app {
   position: relative;
   width: min(100vw, 1140px);
   padding: 16px;
+  /* Keep content clear of notches and home indicators on modern phones. */
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right: max(16px, env(safe-area-inset-right));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+#play-area {
+  position: relative;
+  width: fit-content;
+  margin: 0 auto;
+  /* Critical for touch: tells the browser this element handles its own
+     gestures, so it won't hijack drags for scroll/zoom. Without it, the
+     joystick fights the browser for every swipe. */
+  touch-action: none;
 }
 
 canvas#game-canvas {
@@ -38,6 +70,75 @@ canvas#game-canvas {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   background: var(--bg);
+  touch-action: none;
+}
+
+/* ---- Virtual joystick ------------------------------------------------ */
+.joystick-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  /* The overlay must never swallow pointer events - #play-area below it is
+     what TouchInputManager listens on. This element is purely cosmetic. */
+  pointer-events: none;
+}
+
+.joystick-base {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  border: 3px solid rgba(255, 255, 255, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.joystick-base.is-active {
+  opacity: 1;
+}
+
+.joystick-knob {
+  width: 44%;
+  height: 44%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 8px rgba(74, 50, 34, 0.35);
+}
+
+/* ---- Zoom toggle ------------------------------------------------------ */
+.zoom-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 6;
+  width: 52px;
+  height: 52px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.2rem;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--ink);
+  box-shadow: 0 3px 0 rgba(74, 50, 34, 0.3);
+  /* The button sits over the play area, which has touch-action: none for
+     the joystick. It needs pointer events back so taps land on it, and
+     `auto` touch-action so the tap isn't swallowed as a joystick drag. */
+  pointer-events: auto;
+  touch-action: auto;
+}
+
+.zoom-btn.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.zoom-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(74, 50, 34, 0.3);
 }
 
 .overlay {
@@ -261,5 +362,159 @@ select:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   button {
     transition: none;
+  }
+}
+
+/* ---- Mobile / compact layout ---------------------------------------- */
+@media (max-width: 820px) {
+  #app {
+    padding: 4px;
+    padding-left: max(4px, env(safe-area-inset-left));
+    padding-right: max(4px, env(safe-area-inset-right));
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+  }
+
+  /* Full-bleed on phones: rounded corners and a drop shadow read as "a
+     little game window sitting on a page", which is exactly the boxed-in
+     feel we're trying to get rid of. Edge to edge reads as "the game IS
+     the screen". */
+  canvas#game-canvas {
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  #play-area {
+    width: 100%;
+  }
+
+  .zoom-btn {
+    width: 48px;
+    height: 48px;
+    right: 8px;
+    bottom: 8px;
+  }
+
+  /* Overlay cards must be able to scroll on short screens - a landscape
+     phone is barely 380px tall, and the minigame instruction list plus
+     buttons can easily exceed that. Without this the Start button ends up
+     unreachable below the fold. */
+  .overlay {
+    align-items: flex-start;
+    padding: 8px;
+    overflow-y: auto;
+  }
+
+  .menu-card,
+  .instruction-card,
+  .results-card {
+    padding: 16px 18px;
+    width: min(96vw, 460px);
+    margin: auto;
+  }
+
+  h1 {
+    font-size: 1.6rem;
+  }
+
+  h2 {
+    font-size: 1.2rem;
+  }
+
+  .subtitle {
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+  }
+
+  .menu-row {
+    gap: 8px;
+  }
+
+  /* 16px prevents iOS Safari from auto-zooming the page when an input is
+     focused - a classic mobile form bug that leaves the layout stranded
+     mid-zoom. */
+  .menu-row input,
+  .menu-row select {
+    font-size: 16px;
+    min-height: 44px;
+  }
+
+  #minigame-toggles {
+    margin-bottom: 12px;
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+
+  /* 44px is the widely-used minimum comfortable touch target size. */
+  .mg-toggle {
+    padding: 8px 0;
+    min-height: 44px;
+  }
+
+  .mg-toggle input {
+    width: 22px;
+    height: 22px;
+  }
+
+  button {
+    width: 100%;
+    min-height: 48px;
+    font-size: 1rem;
+  }
+
+  .instruction-icon {
+    font-size: 2rem;
+  }
+
+  .instruction-card ul {
+    font-size: 0.9rem;
+  }
+
+  .hud-bar {
+    padding: 5px 10px;
+    gap: 8px;
+    font-size: 0.8rem;
+    border-radius: var(--radius-md);
+  }
+
+  .hud-scores {
+    gap: 5px;
+  }
+
+  .hud-score {
+    font-size: 0.7rem;
+    padding: 1px 7px;
+  }
+
+  #hud {
+    margin-bottom: 4px;
+  }
+}
+
+/* Landscape phones: vertical space is the scarce resource, so shrink
+   anything that eats height and let cards use the extra width instead. */
+@media (max-width: 950px) and (orientation: landscape) and (max-height: 500px) {
+  .menu-card,
+  .instruction-card,
+  .results-card {
+    width: min(92vw, 620px);
+    padding: 12px 16px;
+  }
+
+  h1 {
+    font-size: 1.3rem;
+    margin-bottom: 2px;
+  }
+
+  .subtitle,
+  .controls-hint {
+    display: none;
+  }
+
+  #minigame-toggles {
+    max-height: 24vh;
+  }
+
+  .instruction-card ul {
+    margin: 6px 0;
   }
 }

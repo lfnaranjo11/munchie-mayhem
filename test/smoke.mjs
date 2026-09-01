@@ -15,6 +15,9 @@ import { createPlayer } from '../src/core/Entity.js';
 import { MINIGAME_REGISTRY } from '../src/minigames/registry.js';
 import { GLOBAL_DEFAULTS } from '../config/global.config.js';
 import { TournamentManager } from '../src/tournament/TournamentManager.js';
+import { resolveDeviceProfile, applyInputOverride } from '../src/core/deviceProfile.js';
+import { CompositeInput } from '../src/core/CompositeInput.js';
+import { resolveArena } from '../src/core/arenaFit.js';
 
 function fakeInputs(players) {
   const out = {};
@@ -134,8 +137,171 @@ function testStartedFlagTiming() {
   console.log('✓ started flag timing is correct for every minigame (regression test for the empty-canvas bug)');
 }
 
+/**
+ * The device profile drives real gameplay decisions (how many humans can
+ * play, whether touch controls appear), so it's worth pinning down. It's
+ * a pure function precisely so it can be tested here with no browser.
+ */
+function testDeviceProfile() {
+  const phonePortrait = resolveDeviceProfile({ width: 390, height: 844, hasTouch: true, hasFinePointer: false });
+  assert.strictEqual(phonePortrait.isTouch, true, 'phone should use touch controls');
+  assert.strictEqual(phonePortrait.maxLocalPlayers, 1, 'a phone is one persons device - 1 human + bots');
+  assert.strictEqual(phonePortrait.isCompact, true);
+  assert.strictEqual(phonePortrait.isPortrait, true);
+  assert.strictEqual(phonePortrait.showNameLabels, false, 'labels are illegible on a phone-sized canvas');
+
+  const phoneLandscape = resolveDeviceProfile({ width: 844, height: 390, hasTouch: true, hasFinePointer: false });
+  assert.strictEqual(phoneLandscape.isTouch, true, 'landscape phone still has no mouse');
+  assert.strictEqual(phoneLandscape.isPortrait, false);
+
+  const desktop = resolveDeviceProfile({ width: 1440, height: 900, hasTouch: false, hasFinePointer: true });
+  assert.strictEqual(desktop.isTouch, false, 'desktop uses the keyboard');
+  assert.strictEqual(desktop.maxLocalPlayers, 2, 'desktop supports 2 players on one keyboard');
+  assert.strictEqual(desktop.showNameLabels, true);
+
+  // A touchscreen laptop has both; someone on that hardware expects the
+  // keyboard, and there's room for two players to share it.
+  const touchLaptop = resolveDeviceProfile({ width: 1400, height: 900, hasTouch: true, hasFinePointer: true });
+  assert.strictEqual(touchLaptop.isTouch, false, 'large touch laptop should default to keyboard');
+  assert.strictEqual(touchLaptop.maxLocalPlayers, 2);
+
+  // A small tablet has a fine pointer (stylus) but not enough width for
+  // two people to share a keyboard, so it gets the touch path.
+  const smallTablet = resolveDeviceProfile({ width: 700, height: 1000, hasTouch: true, hasFinePointer: true });
+  assert.strictEqual(smallTablet.isTouch, true, 'small touch device should use touch even with a fine pointer');
+
+  // The URL override must be able to force either scheme for testing.
+  assert.strictEqual(applyInputOverride(desktop, 'touch').isTouch, true);
+  assert.strictEqual(applyInputOverride(desktop, 'touch').maxLocalPlayers, 1);
+  assert.strictEqual(applyInputOverride(phonePortrait, 'keyboard').isTouch, false);
+  assert.strictEqual(applyInputOverride(desktop, null).isTouch, false, 'no override should pass the profile through unchanged');
+
+  console.log('✓ device profile resolves correctly for phone / desktop / hybrid devices');
+}
+
+/**
+ * CompositeInput must poll EVERY source on isReadyPressed rather than
+ * short-circuiting, because TouchInputManager's flag is a one-shot that
+ * resets when read - short-circuiting would strand a pending tap.
+ */
+function testCompositeInput() {
+  const makeSource = (dir, ready) => ({
+    _ready: ready,
+    getDirection: () => dir,
+    isReadyPressed() {
+      const r = this._ready;
+      this._ready = false;
+      return r;
+    },
+  });
+
+  const idle = makeSource({ x: 0, y: 0 }, false);
+  const active = makeSource({ x: 1, y: 0 }, false);
+  const composite = new CompositeInput([idle, active]);
+  assert.deepStrictEqual(composite.getDirection(0), { x: 1, y: 0 }, 'should fall through an idle source to the active one');
+
+  const a = makeSource({ x: 0, y: 0 }, false);
+  const b = makeSource({ x: 0, y: 0 }, true);
+  const composite2 = new CompositeInput([a, b]);
+  assert.strictEqual(composite2.isReadyPressed(0), true, 'a ready on any source counts');
+  assert.strictEqual(composite2.isReadyPressed(0), false, 'one-shot flags must be consumed, not repeat');
+
+  console.log('✓ composite input merges sources and consumes one-shot ready flags correctly');
+}
+
+/**
+ * The arena adapts its aspect ratio to the device so the canvas fills the
+ * screen (fixing the "screen within a screen" letterboxing), while holding
+ * play AREA constant so no device gets an unfair amount of room.
+ */
+function testArenaFit() {
+  const base = GLOBAL_DEFAULTS.arena;
+  const opts = { minAspect: base.minAspect, maxAspect: base.maxAspect };
+  const baseArea = base.width * base.height;
+
+  const desktop = resolveArena(base, 1920 / 1080, opts);
+  const portrait = resolveArena(base, 390 / 780, opts);
+  const landscape = resolveArena(base, 780 / 390, opts);
+
+  for (const [name, a] of [['desktop', desktop], ['portrait', portrait], ['landscape', landscape]]) {
+    const area = a.width * a.height;
+    assert.ok(Math.abs(area - baseArea) / baseArea < 0.01, `${name}: play area should be preserved (got ${Math.round(area)} vs ${baseArea})`);
+  }
+
+  assert.ok(portrait.height > portrait.width, 'a portrait screen should get a taller-than-wide arena');
+  assert.ok(landscape.width > landscape.height, 'a landscape screen should get a wider-than-tall arena');
+
+  // Extreme aspects must be clamped, or an ultra-tall phone would produce
+  // a sliver arena that plays badly.
+  const sliver = resolveArena(base, 0.2, opts);
+  const sliverAspect = sliver.width / sliver.height;
+  assert.ok(sliverAspect >= base.minAspect - 0.001, `ultra-tall viewport should clamp to minAspect (got ${sliverAspect.toFixed(3)})`);
+
+  // The mobileArenaScale knob shrinks the arena (making entities appear
+  // bigger on screen) without changing its shape.
+  const zoomed = resolveArena(base, 390 / 780, { ...opts, scale: 0.9 });
+  const zoomedArea = zoomed.width * zoomed.height;
+  assert.ok(zoomedArea < baseArea, 'scale < 1 should shrink the arena');
+  assert.ok(Math.abs(zoomedArea - baseArea * 0.81) / (baseArea * 0.81) < 0.01, 'linear scale 0.9 should give 0.81x area');
+  assert.ok(Math.abs(zoomed.width / zoomed.height - portrait.width / portrait.height) < 0.001, 'scale must not change aspect ratio');
+
+  console.log('✓ arena fits device aspect ratios while preserving play area (incl. mobileArenaScale)');
+}
+
+/**
+ * Regression test for the crown ping-ponging between two overlapping
+ * players: a steal must EJECT the crown to a random nearby spot rather
+ * than handing it to whoever landed the touch.
+ */
+function testCrownEject() {
+  const def = MINIGAME_REGISTRY.kingOfTheMeal;
+  const config = def.buildConfig(GLOBAL_DEFAULTS);
+  const arena = {
+    width: GLOBAL_DEFAULTS.arena.width * (config.arenaScale ?? 1),
+    height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
+  };
+  const players = [createPlayer({ x: 400, y: 300, name: 'A' }), createPlayer({ x: 800, y: 300, name: 'B' })];
+  const mg = new def.MinigameClass({
+    players,
+    arena,
+    rng: new RNG(11),
+    chaos: new ChaosDirector(GLOBAL_DEFAULTS.chaos),
+    config,
+    bus: null,
+  });
+  mg.start();
+
+  // Force a known holder, then have the other player touch them.
+  mg.crown.dropped = false;
+  mg.crown.holderId = players[0].id;
+  mg.transferCooldown = 0;
+  players[1].x = players[0].x;
+  players[1].y = players[0].y;
+
+  const lossX = players[0].x;
+  const lossY = players[0].y;
+  mg.updateHeldCrown(1 / 60);
+
+  assert.strictEqual(mg.crown.holderId, null, 'crown must not transfer straight to the toucher');
+  assert.strictEqual(mg.crown.dropped, true, 'crown should be loose on the ground after a steal');
+
+  const dist = Math.hypot(mg.crown.x - lossX, mg.crown.y - lossY);
+  const minSide = Math.min(arena.width, arena.height);
+  assert.ok(dist > minSide * 0.1, `crown should land well away from the loss point (landed ${Math.round(dist)}px away)`);
+  assert.ok(
+    mg.crown.x >= 0 && mg.crown.x <= arena.width && mg.crown.y >= 0 && mg.crown.y <= arena.height,
+    'crown must land inside the arena'
+  );
+
+  console.log(`✓ crown ejects to a random spot on steal (${Math.round(dist)}px away), not to the toucher`);
+}
+
 testRNGDeterminism();
 testEachMinigameRunsHeadless();
 testStartedFlagTiming();
+testDeviceProfile();
+testCompositeInput();
+testArenaFit();
+testCrownEject();
 testTournamentFlow();
 console.log('\nAll smoke tests passed.');

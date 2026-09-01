@@ -1,36 +1,37 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- viewport-fit=cover lets the layout extend under notches/home indicators
+       (paired with env(safe-area-inset-*) in CSS). user-scalable=no and
+       maximum-scale=1 stop double-tap-zoom and pinch from fighting the
+       joystick drag, which is otherwise a constant annoyance on phones. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#fdeecb" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>Munchie Mayhem</title>
   <meta name="description" content="Local party minigames &mdash; bounce, bomb, and chase your way to the crown." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Nunito:wght@400;700;800&display=swap"
-    rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles/main.css" />
-  <script type="module" src="./src/main.js"></script>
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-NDR81XYE7Z"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag() { dataLayer.push(arguments); }
-    gtag('js', new Date());
-
-    gtag('config', 'G-NDR81XYE7Z');
-  </script>
 </head>
-
 <body>
   <div id="app">
     <div id="hud"></div>
-    <canvas id="game-canvas" width="960" height="540"></canvas>
+    <!-- #play-area is the touch surface TouchInputManager binds to. It wraps
+         the canvas rather than being the canvas itself so the joystick
+         overlay can sit above it without intercepting its own pointer
+         events (see .joystick-overlay { pointer-events: none } in CSS). -->
+    <div id="play-area">
+      <canvas id="game-canvas" width="960" height="540"></canvas>
+      <div id="joystick-overlay" class="joystick-overlay"></div>
+      <button id="zoom-btn" class="zoom-btn" aria-label="Zoom in on my player">⌕+</button>
+    </div>
     <div id="menu-screen" class="overlay"></div>
     <div id="instruction-screen" class="overlay" style="display:none"></div>
     <div id="results-screen" class="overlay" style="display:none"></div>
     <div id="crash-screen" class="overlay" style="display:none"></div>
   </div>
+  <script type="module" src="./src/main.js"></script>
 </body>
-
 </html>

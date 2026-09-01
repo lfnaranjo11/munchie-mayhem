@@ -64,7 +64,7 @@ export class KingOfTheMeal extends MinigameBase {
   updateHeldCrown(dt) {
     const holder = this.players.find((p) => p.id === this.crown.holderId);
     if (!holder || !holder.alive) {
-      this.dropCrownAt(holder ?? { x: this.arena.width / 2, y: this.arena.height / 2 }, 0);
+      this.ejectCrown(holder ?? { x: this.arena.width / 2, y: this.arena.height / 2 });
       return;
     }
     holder.roundState.heldTime += dt;
@@ -76,9 +76,20 @@ export class KingOfTheMeal extends MinigameBase {
         if (p.id === holder.id) continue;
         const d = Math.hypot(p.x - holder.x, p.y - holder.y);
         if (d < p.radius + holder.radius) {
-          this.crown.holderId = p.id;
-          this.transferCooldown = this.config.transferCooldown;
-          this.bus?.emit?.('crown:stolen', { from: holder.id, to: p.id });
+          // The crown does NOT go to whoever landed the touch - it pops
+          // off and lands at a random spot a moderate distance away, and
+          // everyone (including the ex-holder) races for it again.
+          //
+          // Handing it directly to the toucher was the old behaviour and
+          // it made bots behave strangely: a bot would touch the holder,
+          // instantly become the holder, immediately switch from "chase"
+          // to "flee" while still overlapping the player it just touched,
+          // get touched straight back, and the crown would ping-pong
+          // between two overlapping players. Ejecting it breaks that loop
+          // and turns every steal into a fresh scramble, which is the
+          // whole point of the minigame.
+          this.ejectCrown(holder);
+          this.bus?.emit?.('crown:stolen', { from: holder.id, by: p.id });
           break;
         }
       }
@@ -90,30 +101,81 @@ export class KingOfTheMeal extends MinigameBase {
     // more rapid" behaviour from the brief.
     const fumbleChance = this.config.fumbleChancePerSecond * this.chaos.intensity * dt;
     if (this.rng.chance(fumbleChance)) {
-      this.dropCrownAt(holder, this.config.fumbleForce * this.chaos.intensity);
+      this.ejectCrown(holder, this.chaos.intensity);
     }
   }
 
-  dropCrownAt(fromPos, force) {
+  /**
+   * Pops the crown off to a random spot a moderate distance from where it
+   * was lost, and leaves it unheld so everyone races for it.
+   *
+   * Distance is a fraction of the map's smaller dimension (config
+   * `ejectDistanceMin`/`ejectDistanceMax`, defaulting to 1/4 - 1/3). Using
+   * the SMALLER dimension keeps the throw sensible on any arena shape -
+   * on a tall portrait phone arena, a fraction of the height could
+   * otherwise launch the crown clean across the playable width.
+   *
+   * The chosen angle is retried a few times to find a landing spot inside
+   * the arena; failing that it's clamped. Retrying rather than clamping
+   * immediately matters because clamping a bad angle would bias landings
+   * toward the arena edges, and a crown that keeps landing in corners is
+   * both predictable and boring to chase.
+   *
+   * `forceScale` (>1 as the round heats up) stretches the distance, so a
+   * fumble late in a fast round throws the crown further - the "expelled
+   * with more force once the game is more rapid" behaviour.
+   */
+  ejectCrown(fromPos, forceScale = 1) {
+    const { rng, arena, config } = this;
+    const minSide = Math.min(arena.width, arena.height);
+    const distance = minSide * rng.range(config.ejectDistanceMin, config.ejectDistanceMax) * forceScale;
+
+    let x = fromPos.x;
+    let y = fromPos.y;
+    const margin = this.crown.radius + 12;
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const angle = rng.range(0, Math.PI * 2);
+      const candidateX = fromPos.x + Math.cos(angle) * distance;
+      const candidateY = fromPos.y + Math.sin(angle) * distance;
+      if (
+        candidateX > margin &&
+        candidateX < arena.width - margin &&
+        candidateY > margin &&
+        candidateY < arena.height - margin
+      ) {
+        x = candidateX;
+        y = candidateY;
+        break;
+      }
+      // Last attempt: accept a clamped position rather than dropping it
+      // back on the ex-holder's feet.
+      if (attempt === 7) {
+        x = Math.max(margin, Math.min(arena.width - margin, candidateX));
+        y = Math.max(margin, Math.min(arena.height - margin, candidateY));
+      }
+    }
+
     this.crown.dropped = true;
     this.crown.holderId = null;
-    const angle = this.rng.range(0, Math.PI * 2);
-    this.crown.x = fromPos.x;
-    this.crown.y = fromPos.y;
-    this.crown.vx = Math.cos(angle) * force;
-    this.crown.vy = Math.sin(angle) * force;
+    this.crown.x = x;
+    this.crown.y = y;
+    this.crown.vx = 0;
+    this.crown.vy = 0;
+    // Brief cooldown so whoever is standing at the landing spot can't
+    // scoop it up in the very same frame it arrives.
     this.transferCooldown = this.config.transferCooldown;
   }
 
-  updateDroppedCrown(dt) {
-    this.crown.x += this.crown.vx * dt;
-    this.crown.y += this.crown.vy * dt;
-    const f = Math.pow(this.config.crownFriction, dt * 60);
-    this.crown.vx *= f;
-    this.crown.vy *= f;
-    this.crown.x = Math.max(this.crown.radius, Math.min(this.arena.width - this.crown.radius, this.crown.x));
-    this.crown.y = Math.max(this.crown.radius, Math.min(this.arena.height - this.crown.radius, this.crown.y));
-
+  /**
+   * A dropped crown now sits still at its landing spot, so this is just
+   * pickup detection. (It used to slide with velocity + friction, which
+   * was removed along with the physics-launch drop - see ejectCrown.
+   * Landing at a definite, visible spot reads far better on screen: a
+   * sliding crown was hard to chase because its resting place wasn't
+   * apparent until it had already stopped.)
+   */
+  updateDroppedCrown(_dt) {
     if (this.transferCooldown > 0) return;
     for (const p of this.getAlivePlayers()) {
       const d = Math.hypot(p.x - this.crown.x, p.y - this.crown.y);

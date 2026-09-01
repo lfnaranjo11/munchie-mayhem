@@ -35,9 +35,87 @@ run after any change to game logic. See [Testing](#testing).
 
 ## Controls
 
+**Desktop / keyboard**
 - **P1**: WASD to move, Space to ready up at the instructions screen
 - **P2**: Arrow keys to move, Enter to ready up
 - Bots ready up instantly and don't need input
+
+**Phone / touch**
+- Touch and drag **anywhere on the play area** to move. The joystick is
+  "floating": it plants itself wherever your thumb lands, so you never
+  have to look down and find a control. Lift to stop.
+- Tap the instruction card (or its Start button) to begin a round.
+- One human player plus bots - see [Mobile & responsive](#mobile--responsive).
+
+## Mobile & responsive
+
+Phones are treated as a first-class target, not an afterthought:
+
+- **One player per phone.** `src/core/deviceProfile.js` caps
+  `maxLocalPlayers` at 1 on compact touch devices - two people can't share
+  a phone-sized virtual joystick, so the remaining slots are filled with
+  bots and the menu's player-count dropdown is hidden entirely rather
+  than shown as a dead option.
+- **The arena adapts its shape to the screen.** This is the fix for the
+  "screen within a screen" problem. A fixed 16:9 arena can never fill a
+  9:19.5 phone - the mismatch is the *aspect ratio*, not the size. So the
+  canvas simply takes the whole viewport, and `src/core/arenaFit.js`
+  reshapes the arena to match (tall on a portrait phone, wide in
+  landscape) while holding total play **area** constant, so no device
+  gets an unfair amount of room. Measured coverage: 96-100% of the
+  viewport on iPhone/Pixel/iPad/desktop, ~87% on very tall phones where
+  the aspect clamp kicks in (those bands are filled with the minigame's
+  own background colour, so they read as seamless rather than boxed).
+- **`mobileArenaScale`** (`arena.mobileScale` in `config/global.config.js`)
+  shrinks the arena on phones so players and hazards appear
+  proportionally bigger. Default 0.9. Note the trade-off: a smaller arena
+  also means less room to run, which makes chase-heavy minigames more
+  frantic - drop toward 0.75 for a hectic phone build, or set 1 to keep
+  phone and desktop balance identical.
+- **Zoom button.** A tap toggles a smooth zoom onto your own player
+  (`src/engine/Camera.js`). It's purely a view transform - the simulation
+  is untouched, so zoom can't affect fairness or determinism, and it
+  stays compatible with the lockstep netcode plan. Rounds always start
+  zoomed out so you can read the new map. Hidden in bots-only sessions.
+- **Touch controls share the keyboard's interface.** `TouchInputManager`
+  implements the same `getDirection(slot)` / `isReadyPressed(slot)`
+  contract as `InputManager`, so adding mobile support required **zero**
+  changes inside `TournamentManager` or any minigame - the same seam that
+  makes bots and future networked players interchangeable.
+  `CompositeInput` merges both, so touchscreen laptops and tablets with
+  keyboards work with either input without special-casing.
+- **The joystick is DOM, not canvas.** `src/ui/JoystickOverlay.js` renders
+  it as HTML layered over the canvas, keeping `CanvasRenderer` purely for
+  game-world drawables (no minigame ever emits a "joystick" drawable).
+- **Mobile browser hygiene**, targeted at actual mobile market share
+  (Chrome on Android is the majority browser worldwide, with Safari/iOS
+  second and Samsung Internet a meaningful third - so these are aimed at
+  the Chromium-on-Android path first, not just iOS):
+  - `visualViewport` is used for sizing rather than `window.innerWidth/Height`,
+    because the latter over-reports on mobile Chrome and Safari while the
+    URL bar is showing - a classic cause of "the bottom of my game is cut
+    off". Its `resize` event also fires when that bar collapses mid-game.
+  - Resize is driven by three listeners (`resize`, the deprecated-but-still-
+    needed `orientationchange`, and `screen.orientation.change`) because no
+    single one fires reliably across Chrome/Safari/Samsung Internet.
+  - `touch-action: none` and `overscroll-behavior: none` stop the page
+    scrolling and rubber-banding under your thumb.
+  - `user-scalable=no` stops double-tap zoom fighting the joystick drag.
+  - 16px form inputs prevent iOS Safari's focus auto-zoom.
+  - `env(safe-area-inset-*)` keeps UI clear of notches and home indicators.
+  - `100dvh` avoids layout jump when browser chrome collapses.
+  - Pointer Events (not touch events) are used throughout, which is the
+    well-supported modern path across all of the above.
+- **Name labels are dropped** on compact screens where they'd render a few
+  pixels tall - stripped in `render()` so minigames stay device-agnostic.
+
+**Testing the mobile layout from a desktop browser**: append
+`?forceInput=touch` to the URL to force touch controls and the
+single-player profile (`?forceInput=keyboard` forces the opposite). Handy
+for checking the joystick without device emulation. Because
+`resolveDeviceProfile()` is a pure function taking an explicit
+environment object, the phone/desktop/hybrid rules are also unit-tested
+headlessly in `test/smoke.mjs`.
 
 ## The five minigames
 
@@ -73,6 +151,10 @@ munchie-mayhem/
 │   │   ├── Physics.js          collision/bounce/drag math, heavily commented
 │   │   ├── PlayerController.js the shared "skating" movement feel
 │   │   ├── InputManager.js     keyboard → {x,y} direction vectors
+│   │   ├── TouchInputManager.js floating virtual joystick, same interface
+│   │   ├── CompositeInput.js   merges keyboard + touch for hybrid devices
+│   │   ├── deviceProfile.js    pure, testable phone/desktop layout rules
+│   │   ├── arenaFit.js         adapts arena shape to the device viewport
 │   │   ├── ChaosDirector.js    the "ramp speed if nobody's dying" system
 │   │   ├── Entity.js           plain-object player/hazard factories
 │   │   ├── EventBus.js         tiny pub/sub (tournament ↔ UI, decoupled)
@@ -80,6 +162,7 @@ munchie-mayhem/
 │   ├── ai/BotBrain.js        steering-behaviour AI shared by every minigame
 │   ├── network/InputSource.js documented (not yet wired-up) multiplayer seam
 │   ├── engine/CanvasRenderer.js the ONLY file that touches <canvas>
+│   ├── engine/Camera.js      zoom-on-player view transform (render-only)
 │   ├── minigames/
 │   │   ├── MinigameBase.js    the interface every minigame implements
 │   │   ├── sharedSteps.js     move-players / bounce-players / bounce-obstacle
@@ -87,7 +170,7 @@ munchie-mayhem/
 │   │   ├── registry.js        the one place a new minigame gets plugged in
 │   │   └── <fiveFolders>/     one class + one config.js per minigame
 │   ├── tournament/TournamentManager.js  round selection, scoring, bot/human input merge
-│   └── ui/                  menu / instructions / results / HUD (all plain DOM)
+│   └── ui/                  menu / instructions / results / HUD / joystick (all plain DOM)
 ├── config/
 │   ├── global.config.js     baseline arena size, movement, chaos tuning
 │   └── variants/*.json      example A/B-test deployment overrides

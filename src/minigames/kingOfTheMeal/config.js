@@ -15,8 +15,16 @@ export const defaultConfig = {
   transferCooldown: 0.6,
   targetHeldTime: 20,
   fumbleChancePerSecond: 0.01,
-  fumbleForce: 90,
-  crownFriction: 0.9,
+
+  // How far the crown is thrown when it pops off, as a fraction of the
+  // arena's SMALLER dimension (so it behaves sanely on a tall phone arena
+  // as well as a wide desktop one). Defaults to roughly 1/4 - 1/3 of the
+  // map: far enough that the ex-holder can't just turn around and grab it
+  // back, close enough that it stays a real scramble rather than a long
+  // walk. Multiplied by chaos intensity on a fumble, so the throw gets
+  // longer as the round heats up.
+  ejectDistanceMin: 0.25,
+  ejectDistanceMax: 0.33,
 };
 
 export function buildKingOfTheMealConfig(globalConfig) {
