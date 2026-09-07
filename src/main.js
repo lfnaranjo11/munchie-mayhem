@@ -7,6 +7,9 @@ import { loadConfig, getVariantFromURL, getSeedFromURL } from './core/ConfigLoad
 import { GLOBAL_DEFAULTS } from '../config/global.config.js';
 import { CanvasRenderer } from './engine/CanvasRenderer.js';
 import { Camera } from './engine/Camera.js';
+import { VisualStateStore } from './engine/anim/VisualState.js';
+import { ParticleSystem, ScreenShake } from './engine/anim/ParticleSystem.js';
+import { CHARACTERS, ANIMATION_DEFAULTS } from '../config/characters.js';
 import { resolveArena } from './core/arenaFit.js';
 import { TournamentManager } from './tournament/TournamentManager.js';
 import { MenuScreen } from './ui/MenuScreen.js';
@@ -22,6 +25,14 @@ import { HUD } from './ui/HUD.js';
  * way." Game rules live in TournamentManager/minigames; drawing lives in
  * CanvasRenderer; none of that logic lives here.
  */
+/**
+ * Bumped whenever something visible changes. Logged on boot so you can
+ * confirm at a glance which build a browser is actually running - a stale
+ * copy or a cached module graph otherwise looks identical to a bug, which
+ * has cost real debugging time on this project already.
+ */
+const BUILD = 'v0.4.0 - characters + animation';
+
 class App {
   constructor() {
     this.canvas = document.getElementById('game-canvas');
@@ -51,6 +62,15 @@ class App {
     this.instructionScreen = new InstructionScreen(document.getElementById('instruction-screen'), this.input, this.profile);
     this.resultsScreen = new ResultsScreen(document.getElementById('results-screen'));
     this.tournament = null;
+
+    // ---- Animation layer (render-only; see engine/anim/VisualState.js) ----
+    // None of this feeds back into the simulation, so it can use wall-clock
+    // time and unseeded randomness without breaking determinism.
+    this.visuals = new VisualStateStore();
+    this.particles = new ParticleSystem();
+    this.shake = new ScreenShake();
+    this.characterMap = new Map(CHARACTERS.map((c) => [c.id, c]));
+    this.lastRenderTime = performance.now();
 
     this.camera = new Camera(GLOBAL_DEFAULTS.camera);
     this.zoomBtn = document.getElementById('zoom-btn');
@@ -164,6 +184,13 @@ class App {
       // is the moment the player is orienting themselves, and inheriting a
       // zoom from the previous round would hide most of the new map.
       this.camera.reset();
+      // Clear leftover animation state, or the previous round's dust and
+      // mid-squash characters bleed into the new map's first frame. Player
+      // ids persist across rounds, so without the clear a character would
+      // also inherit its old squash/velocity state at a new spawn point.
+      this.particles.clear();
+      this.visuals.clear();
+      this.shake.reset();
       this.zoomBtn.classList.remove('is-active');
       this.zoomBtn.textContent = '⌕+';
       this.instructionScreen.show(def, setup.humanPlayers, () => this.tournament.beginRound());
@@ -178,6 +205,21 @@ class App {
         this.tournament.continueTournament();
       });
     });
+    // Discrete effects come from events rather than frame-diffing, because
+    // a one-off bang can't be reliably inferred by comparing states.
+    this.tournament.on('player:eliminated', ({ id, reason }) => {
+      const p = this.tournament.players.find((pl) => pl.id === id);
+      if (p) this.particles.emitPoof(p.x, p.y, p.color);
+      // A blast is a bigger event than a quiet timeout, so it shakes more.
+      const isBlast = reason === 'blast' || reason === 'crater';
+      this.shake.add(isBlast ? ANIMATION_DEFAULTS.shakeOnExplosion : ANIMATION_DEFAULTS.shakeOnElimination);
+      if (isBlast && p) this.particles.emitExplosion(p.x, p.y);
+    });
+
+    this.tournament.on('crown:stolen', () => {
+      this.shake.add(0.18);
+    });
+
     this.tournament.on('tournament:end', (champion) => {
       this.resultsScreen.showChampion(champion, () => {
         this.tournament = null;
@@ -200,6 +242,95 @@ class App {
     }
   }
 
+  /**
+   * Advances the animation state for everything on screen, and spawns
+   * effects from what it observes.
+   *
+   * This reads game state and writes only to the visual store / particle
+   * system - never the other way round. That one-way flow is what lets the
+   * whole animation layer use display-rate timing and unseeded randomness
+   * without touching the simulation's determinism (see VisualState.js).
+   *
+   * Continuous effects (squash, dust) are DERIVED from state here;
+   * discrete ones (explosions, eliminations) come from bus events wired up
+   * in startTournament, because a one-off bang can't be inferred reliably
+   * by diffing frames.
+   */
+  updateAnimation(mg, dt) {
+    const cfg = ANIMATION_DEFAULTS;
+    const maxSpeed = mg.config?.movement?.maxSpeed ?? 250;
+    const liveIds = new Set();
+
+    for (const p of mg.players) {
+      if (!p.alive) continue;
+      liveIds.add(p.id);
+      const visual = this.visuals.get(p.id);
+
+      // Context flags let each minigame's state drive the character's
+      // expression without minigames knowing expressions exist.
+      const isJuggernaut = mg.juggernautId === p.id;
+      const ctx = {
+        maxSpeed,
+        onFire: isJuggernaut,
+        crowned: mg.crown?.holderId === p.id,
+        inDanger: this.isPlayerInDanger(mg, p),
+      };
+
+      const prevSpeed = visual.lastSpeed;
+      visual.update(p, dt, ctx, cfg);
+      const speed = Math.hypot(p.vx, p.vy);
+
+      // Running dust, throttled by a per-character timer so the emission
+      // rate doesn't scale with frame rate.
+      if (speed > maxSpeed * cfg.dustSpeedThreshold) {
+        visual._dustTimer = (visual._dustTimer ?? 0) - dt;
+        if (visual._dustTimer <= 0) {
+          this.particles.emitDust(p.x, p.y + p.radius * 0.7, p.vx / (speed || 1), p.vy / (speed || 1));
+          visual._dustTimer = 0.06;
+        }
+      }
+
+      // Impact sparks on a sharp deceleration - i.e. a real collision, not
+      // just letting go of the stick (friction decelerates far more gently
+      // than a bounce, which is why a threshold separates them cleanly).
+      if (prevSpeed - speed > cfg.impactParticleThreshold) {
+        this.particles.emitImpact(p.x, p.y, '#ffffff');
+      }
+    }
+
+    // Hazards animate too, so drifting food bobs and squashes like the
+    // characters do rather than sliding as rigid discs.
+    for (const h of mg.hazards ?? []) {
+      liveIds.add(h.id);
+      this.visuals.get(h.id).update(h, dt, { maxSpeed: 260 }, cfg);
+    }
+
+    // Drop state for anything that's gone, or this leaks an object per
+    // hazard spawned over a long session.
+    this.visuals.prune(liveIds);
+  }
+
+  /**
+   * Whether a player should look scared. Kept as one small heuristic here
+   * rather than as a method on every minigame, since it's purely cosmetic
+   * and each check is a cheap read of already-public minigame state.
+   */
+  isPlayerInDanger(mg, player) {
+    // An armed bomb nearby (Exploding Fruits).
+    for (const bomb of mg.bombs ?? []) {
+      if (bomb.phase === 'armed' && Math.hypot(bomb.x - player.x, bomb.y - player.y) < 110) return true;
+      if (bomb.phase === 'marked' && bomb.targetId === player.id) return true;
+    }
+    // The juggernaut closing in (Pepper to Die).
+    if (mg.juggernautId && mg.juggernautId !== player.id) {
+      const jug = mg.players.find((p) => p.id === mg.juggernautId);
+      if (jug && Math.hypot(jug.x - player.x, jug.y - player.y) < 130) return true;
+    }
+    // Standing near the grinders (Organic Disposal).
+    if (mg.config?.sawZoneWidth && player.x < mg.config.sawZoneWidth + 90) return true;
+    return false;
+  }
+
   render() {
     const mg = this.tournament?.currentMinigame;
     // A minigame exists (so the instructions screen can show its title)
@@ -215,6 +346,18 @@ class App {
       return;
     }
     this.renderer.clear(mg.backgroundColor);
+
+    // Real elapsed time since the last RENDER frame. Deliberately not the
+    // simulation's fixed dt: animation should run at display rate (so it
+    // looks smooth on a 144Hz screen) and, unlike physics, nothing depends
+    // on it being reproducible.
+    const now = performance.now();
+    const renderDt = Math.min((now - this.lastRenderTime) / 1000, 0.1);
+    this.lastRenderTime = now;
+
+    this.updateAnimation(mg, renderDt);
+    this.particles.update(renderDt);
+    this.shake.update(renderDt);
 
     // Minigames work in logical arena units; this maps them onto real
     // canvas pixels, so the physics/logic layer never needs to know
@@ -232,8 +375,11 @@ class App {
     const offsetY = (this.renderer.height - mg.arena.height * scale) / 2;
 
     const ctx = this.renderer.ctx;
+    const shakeOffset = this.shake.getOffset();
     ctx.save();
-    ctx.translate(offsetX, offsetY);
+    // Shake is applied in canvas pixels, outside the arena scale, so its
+    // magnitude is consistent regardless of how zoomed the view is.
+    ctx.translate(offsetX + shakeOffset.x, offsetY + shakeOffset.y);
     ctx.scale(scale, scale);
 
     // Optional zoom-on-my-player. A no-op at zoom 1, so the default
@@ -250,7 +396,23 @@ class App {
     if (!this.profile.showNameLabels) {
       drawables = drawables.map((d) => (d.label ? { ...d, label: null } : d));
     }
+
+    // Attach the character definition and animation state to each blob.
+    // Done HERE rather than inside minigames on purpose: minigames stay
+    // art-agnostic and keep emitting plain data, so this whole layer can
+    // be swapped for sprites without touching a single gameplay file.
+    drawables = drawables.map((d) => {
+      if (d.type !== 'blob' || !d.id) return d;
+      return {
+        ...d,
+        character: d.characterId ? this.characterMap.get(d.characterId) : undefined,
+        visual: this.visuals.get(d.id),
+      };
+    });
+
+    // Particles render above the world but below UI badges.
     this.renderer.draw(drawables);
+    this.renderer.draw(this.particles.getDrawables());
     ctx.restore();
 
     if (this.touch) this.joystick.update(this.touch.getVisualState());
@@ -259,4 +421,7 @@ class App {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => new App());
+window.addEventListener('DOMContentLoaded', () => {
+  console.log(`%cMunchie Mayhem ${BUILD}`, 'color:#ff6b57;font-weight:bold');
+  new App();
+});

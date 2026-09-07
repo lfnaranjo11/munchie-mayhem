@@ -118,7 +118,7 @@ export class ExplodingFruits extends MinigameBase {
     for (const b of this.bombs) {
       list.push({ type: 'bomb', x: b.x, y: b.y, phase: b.phase, blastPreview: b.blastPreview, blastRadius: this.config.blastRadius });
     }
-    for (const p of this.getAlivePlayers()) list.push({ type: 'blob', x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
+    for (const p of this.getAlivePlayers()) list.push({ type: 'blob', id: p.id, characterId: p.characterId, x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
     return list;
   }
 }

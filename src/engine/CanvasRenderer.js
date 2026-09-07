@@ -1,3 +1,21 @@
+import { drawCharacter } from './CharacterRenderer.js';
+
+/**
+ * Darkens (amount < 0) or lightens (amount > 0) a hex colour. Used to
+ * derive a shading tone for hazards, which only supply a single flat
+ * colour but should still get the same soft rounded body treatment as
+ * characters. Non-hex inputs (e.g. rgba strings) pass through unchanged.
+ */
+function shadeColor(hex, amount) {
+  if (typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) return hex;
+  const num = parseInt(hex.slice(1), 16);
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  const r = clamp(((num >> 16) & 255) * (1 + amount));
+  const g = clamp(((num >> 8) & 255) * (1 + amount));
+  const b = clamp((num & 255) * (1 + amount));
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+}
+
 /**
  * CanvasRenderer.js - the ONLY file that touches the <canvas> 2D context.
  *
@@ -65,50 +83,41 @@ export class CanvasRenderer {
     ctx.fill();
   }
 
-  // ---- Players / hazards: a circle with a simple face -------------------
+  // ---- Players / hazards ------------------------------------------------
+  /**
+   * A character or hazard blob.
+   *
+   * Player blobs carry a `characterId` and an entity `id`; the render loop
+   * in main.js attaches the matching character definition and VisualState
+   * before this runs. Hazards have neither, so they fall back to a simple
+   * body using their own colour - which is why one drawable type covers
+   * both without minigames needing to care.
+   */
   draw_blob(d) {
+    drawCharacter(this.ctx, {
+      x: d.x,
+      y: d.y,
+      radius: d.r,
+      character: d.character ?? { fill: d.fill, shade: shadeColor(d.fill, -0.18), body: 'round', topping: 'none', accent: 'none' },
+      visual: d.visual ?? null,
+      flags: {
+        onFire: d.onFire,
+        crowned: d.crowned,
+        timerFrac: d.timerFrac,
+        label: d.label,
+        face: d.face,
+      },
+    });
+  }
+
+  /** Particles from the render-layer ParticleSystem. */
+  draw_particle(d) {
     const { ctx } = this;
-
-    if (d.onFire) {
-      ctx.beginPath();
-      ctx.arc(d.x, d.y, d.r + 10, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,120,60,0.35)';
-      ctx.fill();
-    }
-
-    ctx.beginPath();
-    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+    ctx.globalAlpha = d.alpha;
     ctx.fillStyle = d.fill;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, Math.max(0.4, d.r), 0, Math.PI * 2);
     ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-    ctx.stroke();
-
-    if (d.face) {
-      ctx.fillStyle = '#2b2b2b';
-      const eyeOffset = d.r * 0.35;
-      const eyeR = d.r * 0.11;
-      ctx.beginPath();
-      ctx.arc(d.x - eyeOffset, d.y - d.r * 0.05, eyeR, 0, Math.PI * 2);
-      ctx.arc(d.x + eyeOffset, d.y - d.r * 0.05, eyeR, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    if (d.crowned) this.draw_crown({ x: d.x, y: d.y - d.r - 14, r: 12 });
-
-    if (typeof d.timerFrac === 'number') {
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillRect(d.x - d.r, d.y - d.r - 14, d.r * 2, 6);
-      ctx.fillStyle = '#ffce54';
-      ctx.fillRect(d.x - d.r, d.y - d.r - 14, d.r * 2 * Math.max(0, d.timerFrac), 6);
-    }
-
-    if (d.label) {
-      ctx.font = '600 12px "Nunito", sans-serif';
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.textAlign = 'center';
-      ctx.fillText(d.label, d.x, d.y + d.r + 16);
-    }
   }
 
   // ---- Organic Disposal --------------------------------------------------

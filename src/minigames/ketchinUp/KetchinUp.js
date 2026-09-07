@@ -194,7 +194,7 @@ export class KetchinUp extends MinigameBase {
     ];
     for (const obs of this.obstacles) if (!obs.struck) list.push({ type: 'chocoBlock', x: obs.x, y: obs.y, r: obs.radius });
     for (const fo of this.flyingObstacles) list.push({ type: 'chocoBlock', x: fo.x, y: fo.y, r: fo.radius, flying: true });
-    for (const p of this.getAlivePlayers()) list.push({ type: 'blob', x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
+    for (const p of this.getAlivePlayers()) list.push({ type: 'blob', id: p.id, characterId: p.characterId, x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
     return list;
   }
 }

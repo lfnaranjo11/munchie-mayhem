@@ -122,8 +122,8 @@ export class OrganicDisposal extends MinigameBase {
   getDrawables() {
     const list = [{ type: 'sawWall', x: 0, y: 0, width: this.config.sawZoneWidth, height: this.arena.height }];
     for (const fx of this.grindEffects) list.push({ type: 'puff', x: fx.x, y: fx.y, life: fx.life, maxLife: fx.maxLife });
-    for (const h of this.hazards) list.push({ type: 'blob', x: h.x, y: h.y, r: h.radius, fill: h.color, face: true });
-    for (const p of this.getAlivePlayers()) list.push({ type: 'blob', x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
+    for (const h of this.hazards) list.push({ type: 'blob', id: h.id, x: h.x, y: h.y, r: h.radius, fill: h.color, face: true });
+    for (const p of this.getAlivePlayers()) list.push({ type: 'blob', id: p.id, characterId: p.characterId, x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
     return list;
   }
 }

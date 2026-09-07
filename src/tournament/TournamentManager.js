@@ -4,8 +4,19 @@ import { EventBus } from '../core/EventBus.js';
 import { BotBrain } from '../ai/BotBrain.js';
 import { createPlayer } from '../core/Entity.js';
 import { MINIGAME_REGISTRY } from '../minigames/registry.js';
+import { CHARACTERS } from '../../config/characters.js';
 
 const PALETTE = ['#ff6b6b', '#4dd4ac', '#4d9de0', '#f4c150', '#c789e8', '#ff9f68'];
+
+/**
+ * Assigns a distinct character to each player slot, wrapping if there are
+ * more players than characters. Characters come from config/characters.js
+ * so a config variant can ship a different roster per deployment without
+ * touching this file.
+ */
+function characterForSlot(index) {
+  return CHARACTERS[index % CHARACTERS.length];
+}
 
 /**
  * TournamentManager - "you choose a number of points, minigames appear at
@@ -50,13 +61,17 @@ export class TournamentManager extends EventBus {
   buildPlayers(humanCount, botCount) {
     const players = [];
     for (let i = 0; i < humanCount; i++) {
-      const p = createPlayer({ name: `Player ${i + 1}`, color: PALETTE[i % PALETTE.length] });
+      const character = characterForSlot(i);
+      const p = createPlayer({ name: `Player ${i + 1}`, color: character.fill });
       p.inputSlot = i;
+      p.characterId = character.id;
       players.push(p);
     }
     for (let i = 0; i < botCount; i++) {
-      const p = createPlayer({ name: `Bot ${i + 1}`, color: PALETTE[(humanCount + i) % PALETTE.length] });
+      const character = characterForSlot(humanCount + i);
+      const p = createPlayer({ name: character.name, color: character.fill });
       p.isBot = true;
+      p.characterId = character.id;
       players.push(p);
     }
     return players;

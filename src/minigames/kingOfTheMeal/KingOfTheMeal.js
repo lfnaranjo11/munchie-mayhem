@@ -223,6 +223,8 @@ export class KingOfTheMeal extends MinigameBase {
     for (const p of this.getAlivePlayers()) {
       list.push({
         type: 'blob',
+        id: p.id,
+        characterId: p.characterId,
         x: p.x,
         y: p.y,
         r: p.radius,

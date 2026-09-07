@@ -18,6 +18,9 @@ import { TournamentManager } from '../src/tournament/TournamentManager.js';
 import { resolveDeviceProfile, applyInputOverride } from '../src/core/deviceProfile.js';
 import { CompositeInput } from '../src/core/CompositeInput.js';
 import { resolveArena } from '../src/core/arenaFit.js';
+import { easeOutQuad, easeOutBack, easeOutElastic, easeOutBounce, stepSpring, approach } from '../src/engine/anim/easing.js';
+import { ParticleSystem, ScreenShake } from '../src/engine/anim/ParticleSystem.js';
+import { resolveExpression, EXPRESSION } from '../src/engine/anim/VisualState.js';
 
 function fakeInputs(players) {
   const out = {};
@@ -296,6 +299,73 @@ function testCrownEject() {
   console.log(`✓ crown ejects to a random spot on steal (${Math.round(dist)}px away), not to the toucher`);
 }
 
+/**
+ * The animation layer is render-only, but its maths is pure and worth
+ * pinning down - a spring that never settles or a particle pool that
+ * leaks would both show up as a gradually degrading frame rate rather
+ * than an obvious crash.
+ */
+function testAnimationMath() {
+  // Easing curves must hit their endpoints exactly, or animations visibly
+  // snap at the end.
+  for (const [name, fn] of [['easeOutQuad', easeOutQuad], ['easeOutBack', easeOutBack], ['easeOutElastic', easeOutElastic], ['easeOutBounce', easeOutBounce]]) {
+    assert.ok(Math.abs(fn(0) - 0) < 1e-6, `${name}(0) should be 0`);
+    assert.ok(Math.abs(fn(1) - 1) < 1e-6, `${name}(1) should be 1`);
+  }
+  // easeOutBack is supposed to overshoot past its target and come back.
+  let overshot = false;
+  for (let t = 0; t <= 1; t += 0.02) if (easeOutBack(t) > 1.001) overshot = true;
+  assert.ok(overshot, 'easeOutBack should overshoot before settling');
+
+  // A spring must actually converge, and stay finite doing it.
+  const spring = { value: 0, velocity: 0 };
+  for (let i = 0; i < 600; i++) stepSpring(spring, 1, 190, 0.82, 1 / 60);
+  assert.ok(Number.isFinite(spring.value), 'spring must not diverge to NaN/Infinity');
+  assert.ok(Math.abs(spring.value - 1) < 0.02, `spring should settle at its target (got ${spring.value.toFixed(3)})`);
+
+  // approach() must be frame-rate independent: one big step and several
+  // small ones covering the same time should land in about the same place.
+  const oneBig = approach(0, 1, 0.1, 4);
+  let manySmall = 0;
+  for (let i = 0; i < 4; i++) manySmall = approach(manySmall, 1, 0.1, 1);
+  assert.ok(Math.abs(oneBig - manySmall) < 1e-9, 'approach() must be frame-rate independent');
+
+  console.log('✓ easing curves hit their endpoints, springs converge, approach is frame-rate independent');
+}
+
+function testParticlePool() {
+  const ps = new ParticleSystem(50);
+  // Emitting far more than the pool holds must not grow it - the cap is
+  // what bounds the cost of a chaotic moment.
+  for (let i = 0; i < 40; i++) ps.emit({ x: 0, y: 0, count: 10 });
+  assert.strictEqual(ps.pool.length, 50, 'particle pool must not grow beyond its cap');
+  assert.ok(ps.getDrawables().length <= 50, 'never more live particles than the pool holds');
+
+  // Everything must eventually die, or particles accumulate forever.
+  for (let i = 0; i < 400; i++) ps.update(1 / 60);
+  assert.strictEqual(ps.getDrawables().length, 0, 'all particles should expire');
+
+  // Screen shake must decay to rest rather than shaking forever.
+  const shake = new ScreenShake();
+  shake.add(1);
+  for (let i = 0; i < 200; i++) shake.update(1 / 60);
+  assert.strictEqual(shake.trauma, 0, 'screen shake trauma should decay to zero');
+  assert.deepStrictEqual(shake.getOffset(), { x: 0, y: 0 }, 'no offset once settled');
+
+  console.log('✓ particle pool is bounded and expires, screen shake decays to rest');
+}
+
+function testExpressionPriority() {
+  // Danger cues must beat ambient ones - the expression is a gameplay
+  // readability signal, not just decoration.
+  assert.strictEqual(resolveExpression({ inDanger: true, crowned: true }, 0), EXPRESSION.SCARED, 'danger should outrank the crown');
+  assert.strictEqual(resolveExpression({ onFire: true, inDanger: true }, 0), EXPRESSION.DETERMINED, 'being the juggernaut outranks danger');
+  assert.strictEqual(resolveExpression({ crowned: true }, 0), EXPRESSION.HAPPY);
+  assert.strictEqual(resolveExpression({}, 0.9), EXPRESSION.DETERMINED, 'running flat out should look determined');
+  assert.strictEqual(resolveExpression({}, 0), EXPRESSION.NEUTRAL);
+  console.log('✓ facial expressions resolve in the right priority order');
+}
+
 testRNGDeterminism();
 testEachMinigameRunsHeadless();
 testStartedFlagTiming();
@@ -303,5 +373,8 @@ testDeviceProfile();
 testCompositeInput();
 testArenaFit();
 testCrownEject();
+testAnimationMath();
+testParticlePool();
+testExpressionPriority();
 testTournamentFlow();
 console.log('\nAll smoke tests passed.');

@@ -163,6 +163,8 @@ munchie-mayhem/
 │   ├── network/InputSource.js documented (not yet wired-up) multiplayer seam
 │   ├── engine/CanvasRenderer.js the ONLY file that touches <canvas>
 │   ├── engine/Camera.js      zoom-on-player view transform (render-only)
+│   ├── engine/CharacterRenderer.js procedural characters (the sprite seam)
+│   ├── engine/anim/          squash/stretch, particles, shake, easing
 │   ├── minigames/
 │   │   ├── MinigameBase.js    the interface every minigame implements
 │   │   ├── sharedSteps.js     move-players / bounce-players / bounce-obstacle
@@ -173,6 +175,7 @@ munchie-mayhem/
 │   └── ui/                  menu / instructions / results / HUD / joystick (all plain DOM)
 ├── config/
 │   ├── global.config.js     baseline arena size, movement, chaos tuning
+│   ├── characters.js        character roster + animation tuning knobs
 │   └── variants/*.json      example A/B-test deployment overrides
 ├── styles/main.css          all CSS (the menu/HUD chrome around the canvas)
 └── test/smoke.mjs           headless Node test - see Testing
@@ -256,6 +259,60 @@ explicit ask:
   static server (`serve`, via `npx`, not even installed). That's a
   deliberate choice for a project this size, not an oversight - see
   `package.json`.
+
+## Characters & animation
+
+Characters are **original designs**, drawn procedurally from data in
+`config/characters.js`. Game mechanics aren't protected and reimplementing
+them is fine, but character *art* is - so nothing here reproduces any
+existing game's assets, and you shouldn't drop ripped sprites in either if
+this is going public.
+
+**The animation layer is render-only.** Everything under `src/engine/anim/`
+derives its state from game state each frame and is never read back by
+physics, minigame rules, or bots. Three things fall out of that one-way
+flow:
+  - the simulation stays deterministic, so the seeded-RNG guarantee and
+    the lockstep multiplayer plan both survive (animation is free to use
+    wall-clock timing and unseeded randomness precisely *because* it can't
+    feed back);
+  - animation runs at display rate (smooth on a 144Hz screen) while
+    physics stays locked to its fixed timestep;
+  - the headless test suite still covers every minigame without ever
+    constructing a VisualState.
+
+What's implemented:
+
+| Piece | File | What it does |
+|---|---|---|
+| Squash & stretch | `anim/VisualState.js` | Springs, so a collision can knock a character any frame and it recovers continuously. Volume-preserving, so stretching along one axis thins the other. |
+| Impact reaction | `anim/VisualState.js` | A sharp deceleration (a real bounce, not just friction) kicks a squash impulse and spawns sparks. |
+| Idle life | `anim/VisualState.js` | Bob, lean-into-movement, random blinking, gaze drift. Small details, but perfect stillness is the fastest way to look like a sprite instead of a creature. |
+| Expressions | `anim/VisualState.js` | Neutral / happy / scared / dizzy / determined, chosen by priority from context so danger cues beat ambient ones. |
+| Particles | `anim/ParticleSystem.js` | Pooled (never grows) dust, impact sparks, explosion debris, elimination poofs. |
+| Screen shake | `anim/ParticleSystem.js` | Trauma-based and squared, so hits accumulate smoothly instead of restarting a timer. |
+| Easing | `anim/easing.js` | Curves plus a damped spring and a frame-rate-independent `approach()`. |
+
+**Tuning the feel**: every knob is in `ANIMATION_DEFAULTS` in
+`config/characters.js` - reach for `squashDamping` (lower = wobblier),
+`stretchPerSpeed`, and `impactSquash` first.
+
+**Adding a character**: add an entry to `CHARACTERS`. Nothing else
+changes - `TournamentManager` assigns from that list and the renderer
+draws whatever body/topping/accent combination it finds.
+
+### Moving to drawn sprites later
+
+`src/engine/CharacterRenderer.js` is the single file to replace. Its whole
+public surface is `drawCharacter(ctx, { x, y, radius, character, visual, flags })`.
+A sprite-sheet or skeletal (Spine/Rive) implementation takes the same
+arguments and uses `visual` to pick a frame and apply the same transform -
+so minigames, the renderer's dispatch, and the camera all stay untouched.
+
+Worth staying procedural for a while, though: zero asset load, crisp at
+any resolution and DPI, and characters can be recoloured or reshaped from
+config for A/B tests. The motion is doing most of the work anyway - it's
+worth confirming the game feels good before committing to an art style.
 
 ## Adding a new minigame
 
