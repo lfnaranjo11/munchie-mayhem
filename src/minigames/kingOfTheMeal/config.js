@@ -25,6 +25,18 @@ export const defaultConfig = {
   // longer as the round heats up.
   ejectDistanceMin: 0.25,
   ejectDistanceMax: 0.33,
+
+  // ── Loose-crown drift (see KingOfTheMeal.updateDroppedCrown) ────────
+  // The crown floats like a feather rather than sitting still: slow
+  // travel with a sideways sway, punctuated by sudden veers so players
+  // can't just run a straight intercept.
+  driftSpeed: 55, // px/s, multiplied by chaos intensity
+  driftChangeMin: 0.7, // seconds between sudden direction changes
+  driftChangeMax: 1.8,
+  driftTurnMin: 0.8, // radians per veer (~45deg)
+  driftTurnMax: 2.2, // (~126deg) - big enough to feel abrupt
+  driftSwaySpeed: 3.2, // how fast the sideways sway oscillates
+  driftSwayAmount: 0.55, // how wide the sway is, relative to heading
 };
 
 export function buildKingOfTheMealConfig(globalConfig) {

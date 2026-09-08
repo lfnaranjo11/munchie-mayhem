@@ -52,6 +52,7 @@ export class MenuScreen {
           ${options}
         </fieldset>
         <button id="start-btn">Start Tournament</button>
+        <button id="online-btn" class="secondary">Play Online</button>
         <p class="controls-hint">
           ${
             this.profile.isTouch
@@ -63,6 +64,7 @@ export class MenuScreen {
     `;
 
     this.root.querySelector('#start-btn').addEventListener('click', () => this.handleStart());
+    this.root.querySelector('#online-btn').addEventListener('click', () => this.onlineCallback?.());
   }
 
   handleStart() {
@@ -83,6 +85,10 @@ export class MenuScreen {
 
   onStart(cb) {
     this.startCallback = cb;
+  }
+
+  onOnline(cb) {
+    this.onlineCallback = cb;
   }
 
   hide() {

@@ -63,7 +63,10 @@ export class ExplodingFruits extends MinigameBase {
     const alive = this.getAlivePlayers();
     if (!alive.length) return;
     const target = this.rng.pick(alive);
-    this.bombs.push({ targetId: target.id, x: target.x, y: target.y, phase: 'marked', timer: this.config.markDuration, blastPreview: 0 });
+    // Stable id so the network layer can match this bomb across
+    // snapshots and interpolate its position instead of teleporting it.
+    this._bombSeq = (this._bombSeq ?? 0) + 1;
+    this.bombs.push({ id: `bomb_${this._bombSeq}`, targetId: target.id, x: target.x, y: target.y, phase: 'marked', timer: this.config.markDuration, blastPreview: 0 });
   }
 
   detonate(bomb) {
@@ -116,7 +119,7 @@ export class ExplodingFruits extends MinigameBase {
   getDrawables() {
     const list = this.craters.map((c) => ({ type: 'crater', x: c.x, y: c.y, r: c.radius }));
     for (const b of this.bombs) {
-      list.push({ type: 'bomb', x: b.x, y: b.y, phase: b.phase, blastPreview: b.blastPreview, blastRadius: this.config.blastRadius });
+      list.push({ id: b.id, type: 'bomb', x: b.x, y: b.y, phase: b.phase, blastPreview: b.blastPreview, blastRadius: this.config.blastRadius });
     }
     for (const p of this.getAlivePlayers()) list.push({ type: 'blob', id: p.id, characterId: p.characterId, x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
     return list;

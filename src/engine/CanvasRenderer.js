@@ -121,16 +121,75 @@ export class CanvasRenderer {
   }
 
   // ---- Organic Disposal --------------------------------------------------
+  /**
+   * The grinder wall: a column of spinning saw blades.
+   *
+   * Blades counter-rotate in alternating directions and are spun from
+   * wall-clock time. That's fine here (and consistent with the fire aura)
+   * because it's purely cosmetic - the collision test in OrganicDisposal
+   * is a simple x-position check that knows nothing about blade angle, so
+   * the animation can't affect gameplay or determinism.
+   */
   draw_sawWall(d) {
     const { ctx } = this;
-    ctx.fillStyle = '#5b5b5b';
+    const t = performance.now() / 1000;
+
+    // Housing
+    ctx.fillStyle = '#4a4a4a';
     ctx.fillRect(d.x, d.y, d.width, d.height);
-    const teeth = Math.floor(d.height / 34);
-    ctx.fillStyle = '#c9c9c9';
-    for (let i = 0; i < teeth; i++) {
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(d.x + d.width - 6, d.y, 6, d.height);
+
+    const spacing = 34;
+    const count = Math.ceil(d.height / spacing) + 1;
+    const bladeX = d.width * 0.68;
+    const radius = 16;
+
+    for (let i = 0; i < count; i++) {
+      const cy = 18 + i * spacing;
+      // Alternate spin direction so adjacent blades look like meshing gears.
+      const dir = i % 2 === 0 ? 1 : -1;
+      const angle = t * 5.5 * dir;
+
+      ctx.save();
+      ctx.translate(bladeX, cy);
+      ctx.rotate(angle);
+
+      // Teeth: a ring of tapered points around the disc.
+      ctx.fillStyle = '#d8d8d8';
       ctx.beginPath();
-      ctx.arc(d.width * 0.7, 20 + i * 34, 16, 0, Math.PI * 2);
+      const teeth = 9;
+      for (let k = 0; k < teeth; k++) {
+        const a0 = (k / teeth) * Math.PI * 2;
+        const a1 = ((k + 0.5) / teeth) * Math.PI * 2;
+        const a2 = ((k + 1) / teeth) * Math.PI * 2;
+        ctx.lineTo(Math.cos(a0) * radius, Math.sin(a0) * radius);
+        ctx.lineTo(Math.cos(a1) * (radius * 1.32), Math.sin(a1) * (radius * 1.32));
+        ctx.lineTo(Math.cos(a2) * radius, Math.sin(a2) * radius);
+      }
+      ctx.closePath();
       ctx.fill();
+
+      // Disc body and hub
+      ctx.fillStyle = '#b4b4b4';
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#8e8e8e';
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * 0.34, 0, Math.PI * 2);
+      ctx.fill();
+
+      // A single highlighted spoke makes the rotation actually readable -
+      // a plain disc spinning looks static no matter how fast it turns.
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, -radius * 0.75);
+      ctx.lineTo(0, radius * 0.75);
+      ctx.stroke();
+
+      ctx.restore();
     }
   }
 
@@ -179,6 +238,21 @@ export class CanvasRenderer {
   // ---- King of the Meal ------------------------------------------------
   draw_crown(d) {
     const { ctx } = this;
+    // A floating crown bobs and leans into its drift heading, so its
+    // motion reads as a feather being carried rather than a sliding icon.
+    if (d.floating) {
+      const t = performance.now() / 1000;
+      ctx.translate(d.x, d.y);
+      ctx.rotate(Math.sin(t * 2.2) * 0.22 + (d.dirX ?? 0) * 0.18);
+      ctx.translate(-d.x, -d.y + Math.sin(t * 3.1) * 2.5);
+      // Sparkle halo so it stays visible while drifting over clutter.
+      ctx.globalAlpha = 0.35 + Math.sin(t * 4) * 0.12;
+      ctx.fillStyle = '#fff3b0';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r * 1.9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     ctx.fillStyle = '#ffd23f';
     ctx.beginPath();
     ctx.moveTo(d.x - d.r, d.y + d.r * 0.5);

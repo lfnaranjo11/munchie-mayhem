@@ -25,11 +25,15 @@
  *   topping   'sprout' | 'leaf' | 'drip' | 'swirl' | 'none' - the bit on top
  *   toppingColor
  *   accent    freckles/holes/seeds scattered on the body ('none' to skip)
+ *   celebration  'jump' | 'spin' | 'wiggle' | 'pulse' | 'flip' - the win
+ *                animation, so the results screen depends on WHO won
+ *                (see src/ui/WinnerShowcase.js)
  */
 
 export const CHARACTERS = [
   {
     id: 'tomo',
+    celebration: 'jump',
     name: 'Tomo',
     body: 'round',
     fill: '#ff6b6b',
@@ -40,6 +44,7 @@ export const CHARACTERS = [
   },
   {
     id: 'chedd',
+    celebration: 'spin',
     name: 'Chedd',
     body: 'wedge',
     fill: '#f7c948',
@@ -50,6 +55,7 @@ export const CHARACTERS = [
   },
   {
     id: 'spud',
+    celebration: 'wiggle',
     name: 'Spud',
     body: 'squat',
     fill: '#e8c98f',
@@ -60,6 +66,7 @@ export const CHARACTERS = [
   },
   {
     id: 'bloob',
+    celebration: 'pulse',
     name: 'Bloob',
     body: 'round',
     fill: '#68c3e8',
@@ -70,6 +77,7 @@ export const CHARACTERS = [
   },
   {
     id: 'brocc',
+    celebration: 'flip',
     name: 'Brocc',
     body: 'tall',
     fill: '#7fbf6a',
@@ -80,6 +88,7 @@ export const CHARACTERS = [
   },
   {
     id: 'plum',
+    celebration: 'jump',
     name: 'Plum',
     body: 'round',
     fill: '#c789e8',

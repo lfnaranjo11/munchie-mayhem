@@ -366,6 +366,80 @@ function testExpressionPriority() {
   console.log('✓ facial expressions resolve in the right priority order');
 }
 
+/**
+ * Regression test for "the crown sometimes gets stuck in an obstacle".
+ *
+ * Root cause was that ejectCrown picked a landing spot using only the
+ * arena bounds, so it could land inside an obstacle. Since players
+ * collide with obstacles they physically could not reach it, and the
+ * round stalled until the timer expired. This drives a long round and
+ * asserts the crown is never inside an obstacle on any frame, and that
+ * its drift actually moves it and changes direction.
+ */
+function testCrownNeverStuck() {
+  const def = MINIGAME_REGISTRY.kingOfTheMeal;
+  const config = def.buildConfig(GLOBAL_DEFAULTS);
+  const arena = {
+    width: GLOBAL_DEFAULTS.arena.width * (config.arenaScale ?? 1),
+    height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
+  };
+
+  let checkedFrames = 0;
+  let worstOverlap = 0;
+  const headings = new Set();
+  let movedDistance = 0;
+
+  // Several seeds, because a stuck crown depends on where obstacles and
+  // eject angles happen to land.
+  for (const seed of [1, 7, 13, 42, 99]) {
+    const players = [0, 1, 2, 3].map((i) =>
+      createPlayer({ x: 120 + i * 130, y: 140 + i * 70, name: `P${i}` })
+    );
+    const mg = new def.MinigameClass({
+      players,
+      arena,
+      rng: new RNG(seed),
+      chaos: new ChaosDirector(GLOBAL_DEFAULTS.chaos),
+      config,
+      bus: null,
+    });
+    mg.start();
+
+    let prev = { x: mg.crown.x, y: mg.crown.y };
+    for (let f = 0; f < 3600; f++) {
+      const inputs = {};
+      for (const p of players) inputs[p.id] = { x: Math.random() * 2 - 1, y: Math.random() * 2 - 1 };
+      mg.step(1 / 60, inputs);
+
+      if (mg.crown.dropped) {
+        for (const obs of mg.obstacles) {
+          const d = Math.hypot(mg.crown.x - obs.x, mg.crown.y - obs.y);
+          const minDist = obs.radius + mg.crown.radius;
+          if (d < minDist) worstOverlap = Math.max(worstOverlap, minDist - d);
+        }
+        movedDistance += Math.hypot(mg.crown.x - prev.x, mg.crown.y - prev.y);
+        headings.add(Math.round(Math.atan2(mg.crown.dirY, mg.crown.dirX) * 8));
+        checkedFrames++;
+      }
+      prev = { x: mg.crown.x, y: mg.crown.y };
+
+      // Crown must always stay inside the arena.
+      assert.ok(
+        mg.crown.x >= 0 && mg.crown.x <= arena.width && mg.crown.y >= 0 && mg.crown.y <= arena.height,
+        `seed ${seed}: crown left the arena at (${mg.crown.x.toFixed(1)}, ${mg.crown.y.toFixed(1)})`
+      );
+      if (mg.isFinished()) break;
+    }
+  }
+
+  assert.ok(checkedFrames > 200, `expected plenty of loose-crown frames to check, got ${checkedFrames}`);
+  assert.strictEqual(worstOverlap, 0, `crown must never overlap an obstacle (worst overlap ${worstOverlap.toFixed(2)}px)`);
+  assert.ok(movedDistance > 500, 'a loose crown should actually drift, not sit still');
+  assert.ok(headings.size > 5, `crown should change direction over time (distinct headings: ${headings.size})`);
+
+  console.log(`\u2713 crown never sticks in an obstacle and drifts with direction changes (${checkedFrames} loose frames, ${headings.size} headings)`);
+}
+
 testRNGDeterminism();
 testEachMinigameRunsHeadless();
 testStartedFlagTiming();
@@ -373,6 +447,7 @@ testDeviceProfile();
 testCompositeInput();
 testArenaFit();
 testCrownEject();
+testCrownNeverStuck();
 testAnimationMath();
 testParticlePool();
 testExpressionPriority();

@@ -189,11 +189,11 @@ export class KetchinUp extends MinigameBase {
 
   getDrawables() {
     const list = [
-      { type: 'beam', x1: this.emitter.x, y1: this.emitter.y, x2: this.beamEnd.x, y2: this.beamEnd.y, width: this.config.beamWidth, live: this.beamIsLive },
-      { type: 'emitter', x: this.emitter.x, y: this.emitter.y },
+      { id: 'beam', type: 'beam', x1: this.emitter.x, y1: this.emitter.y, x2: this.beamEnd.x, y2: this.beamEnd.y, width: this.config.beamWidth, live: this.beamIsLive },
+      { id: 'emitter', type: 'emitter', x: this.emitter.x, y: this.emitter.y },
     ];
     for (const obs of this.obstacles) if (!obs.struck) list.push({ type: 'chocoBlock', x: obs.x, y: obs.y, r: obs.radius });
-    for (const fo of this.flyingObstacles) list.push({ type: 'chocoBlock', x: fo.x, y: fo.y, r: fo.radius, flying: true });
+    this.flyingObstacles.forEach((fo, i) => list.push({ id: `fly_${i}`, type: 'chocoBlock', x: fo.x, y: fo.y, r: fo.radius, flying: true }));
     for (const p of this.getAlivePlayers()) list.push({ type: 'blob', id: p.id, characterId: p.characterId, x: p.x, y: p.y, r: p.radius, fill: p.color, face: true, label: p.name });
     return list;
   }

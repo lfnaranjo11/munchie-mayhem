@@ -1,0 +1,22 @@
+name = "munchie-mayhem-server"
+main = "worker.js"
+compatibility_date = "2025-04-01"
+
+# The game simulation is imported from ../../src, so the bundler needs to
+# reach outside this directory. Everything it pulls in is plain ESM with
+# no Node built-ins, which is what makes the same rules run in the
+# browser, in Node, and here.
+[build]
+command = ""
+
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoomDO"
+
+[[durable_objects.bindings]]
+name = "MATCHMAKER"
+class_name = "MatchmakerDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["GameRoomDO", "MatchmakerDO"]

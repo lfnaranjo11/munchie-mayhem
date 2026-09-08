@@ -371,51 +371,135 @@ underlying randomness, or reproducing a specific bug report.
 
 ## Online multiplayer
 
-**Not wired up in this pass - here's the reasoning**, since the brief
-left the call up to me: local 2-player (same device) plus bots is fully
-implemented and solid, which already satisfies "at least two players, my
-choice on the internet part." Real online play needs a transport layer
-(a relay server or P2P channel) that can't be meaningfully tested without
-a second real network peer - not something verifiable from here - and
-given the mention of a rough past experience with exactly this kind of
-bug, shipping that blind felt like the wrong trade against "don't
-sacrifice playability."
+**Implemented.** Up to 4 players per room, via room codes *and* public
+quick-match. Empty seats are filled with bots.
 
-What *is* done: the simulation is built to make online play tractable
-without a rewrite when you're ready for it.
+```
+npm run server        # start the game server (ws://localhost:8080)
+npm run dev           # serve the client
+```
 
-**The short version of why this avoids the state-sync mess**: the
-classic way this goes wrong is clients sending each other *state*
-("player A is now at 412, 88") and trying to reconcile whatever order
-packets happen to arrive in - that's exactly the kind of race condition
-that's easy to end up fighting forever. This engine instead uses a fixed
-timestep (`GameLoop.js`) and a seeded RNG as the *only* source of
-randomness (`RNG.js` - `Math.random()` is never called anywhere in game
-logic), which makes the simulation fully deterministic: same starting
-seed + same sequence of inputs, applied in the same order, produces the
-same outcome on any machine. That means clients never need to exchange
-state at all - only each player's `{x,y}` input for the current tick, the
-same shape `InputManager` and `BotBrain` already produce. This is
-standard **lockstep netcode**, the same idea classic RTS games and modern
-rollback fighting games use.
+Then open `http://localhost:5173/` → **Play Online**. To point a client at
+a different server: `?server=ws://your-host:8080`. A shared
+`?room=ABCD` link joins that room directly.
 
-What's actually left to build, when you want it (see the full writeup in
-`src/network/InputSource.js`):
+### Architecture: server-authoritative
 
-1. A relay (a WebSocket server that timestamps and rebroadcasts input
-   packets - it runs no game logic itself) or a P2P channel (e.g.
-   PeerJS/WebRTC data channels).
-2. A `NetworkInputSource` matching the same `getDirection(slot)` shape
-   `InputManager` already exposes, so `TournamentManager.collectInputs()`
-   barely changes.
-3. A small fixed input-delay buffer (simulate tick N a few ticks after
-   it was issued) to absorb normal jitter without stalling.
-4. A disconnect policy (wait briefly for a late packet, then drop that
-   peer to a bot) so a bad connection degrades instead of freezing.
+The server runs the one true simulation and broadcasts snapshots; clients
+send only their input direction and render what comes back.
 
-None of that is hard *specifically because* of the determinism work
-already done - it's transport plumbing at that point, not game-state
-logic.
+**This replaces the lockstep plan described in earlier versions of this
+file, and the reason is worth recording.** Lockstep (exchange inputs only,
+every client simulates identically) depends on bit-identical floating
+point across machines. IEEE-754 guarantees that for `+ - * /` and `sqrt`,
+but *not* for `Math.sin`, `cos`, `atan2`, `pow` or `hypot` — which this
+physics leans on heavily. Two players on different browsers could drift
+apart over a few minutes, and lockstep desync is exactly the silent,
+hard-to-debug failure mode worth designing away from. Server authority
+sidesteps it entirely: there is only one simulation, so there is nothing
+to diverge. It also means no player gets a host's latency advantage, and
+the match survives any player leaving.
+
+The cost is a round-trip of input latency (see "Client-side prediction"
+below) and a server to run — which the numbers made affordable.
+
+### The pieces
+
+| Piece | File | Notes |
+|---|---|---|
+| Wire protocol | `src/network/protocol.js` | Shared verbatim by client and server, so it can't drift. JSON for now; swap `encode`/`decode` for a binary codec if bandwidth ever matters. |
+| Room logic | `src/network/GameRoom.js` | **Transport-agnostic** — never touches a socket. Wraps `TournamentManager`, so online runs the *same* minigame rules as offline. |
+| Cloudflare adapter | `server/cloudflare/` | Worker + one Durable Object per room, plus a Matchmaker DO for quick-match. |
+| Node adapter | `server/node-server.mjs` | Same `GameRoom`, plain `ws`. Local dev today; drop-in VPS deployment. |
+| Client | `src/network/NetworkClient.js` | Fixed-rate input, snapshot buffering, interpolation. |
+
+**The snapshot is just the drawable list.** Minigames already expose their
+whole visible state as plain descriptors via `getDrawables()`, so that
+list *is* the wire format — no separate serialization layer to write and
+keep in sync. Any new minigame is network-ready with no extra work.
+Velocity isn't sent; the client derives it by differencing consecutive
+snapshots, which it buffers for interpolation anyway.
+
+### Hosting & cost
+
+Cloudflare Durable Objects, because a game room is exactly what a DO is:
+a single-threaded, strongly-consistent, stateful actor that scales to zero
+when empty. Rooms are isolated by construction and need no database.
+
+- Durable Objects are available on the **Workers Free plan**.
+- Workers Paid is **$5/month** minimum and includes DO usage, with **no
+  egress/bandwidth charges**.
+- Inbound messages bill at **20:1** (20 messages = 1 request); **outbound
+  is free** — which suits us, since snapshots (the heavy direction) cost
+  nothing.
+
+At 4 players sending input at 20Hz: ~14k billed requests/hour → roughly
+**70 hours of live 4-player play per month on the free tier**, several
+hundred on the $5 plan. Deploy with `cd server/cloudflare && npx wrangler deploy`.
+
+### Latency budget
+
+Getting online play to feel right was mostly about removing
+self-inflicted delay, not network delay:
+
+| Source | Before | Now |
+|---|---|---|
+| Snapshot rate | 20Hz (50ms) | **30Hz (33ms)** — outbound is free on Cloudflare |
+| Interpolation buffer | 100ms | **67ms** (2 snapshot intervals) |
+| Own input response | full round trip | **~0ms** (client-side prediction) |
+
+**Client-side prediction** (`NetworkClient.updatePrediction`) simulates
+your own character locally and immediately, then eases toward the
+authoritative position. It's prediction *without* rollback: we don't
+replay an input history against each snapshot, because that needs the
+client to reproduce server physics exactly, including collisions it can't
+foresee. Instead we predict free movement — most of the time, and all of
+what makes input feel responsive — and blend toward the server on
+disagreement, snapping if the error exceeds ~90px. A collision therefore
+resolves over a few frames (slight softness on impact) rather than
+instantly. That's a far better trade than laggy controls. Disable with
+`net.predictionEnabled = false` if you want to compare.
+
+### Known gaps / next steps
+- **The Cloudflare adapter is written but not verified against real
+  Cloudflare infrastructure.** The Node adapter is fully tested end to
+  end. The DO game loop uses `setInterval` and deliberately does *not*
+  use WebSocket Hibernation during a match (a hibernating object can't
+  run a loop) — that's the part to check first under real load, and the
+  reason the Node server exists as a fallback.
+- **No reconnect.** Dropping mid-match hands your seat to a bot; you'd
+  rejoin as a new player.
+- **No spectators, no persistent accounts, no anti-cheat.** The server is
+  authoritative so clients can't teleport, but there's no rate limiting on
+  a malicious flood of messages.
+
+### Testing
+
+```
+npm run test:network
+```
+
+Boots the real server, connects **four real WebSocket clients**, plays a
+match and asserts: distinct seat assignment, room capacity enforcement,
+snapshot streaming, that every client receives byte-identical
+authoritative state for the same sequence number, that network input
+actually moves players, and that the match survives a mid-game
+disconnect. These tests have caught several genuine bugs:
+- `addPlayer()` sends WELCOME synchronously, but both adapters registered
+  the socket *after* calling it, so the first message was dropped and
+  clients hung forever.
+- `botCount` was computed against a floor of 2 total players, so a
+  2-human room got **zero** bots while the lobby UI promised the
+  opposite.
+- The crown, bombs, the laser beam and the pepper had **no `id`** on their
+  drawables. Interpolation matches by id, so they were drawn straight
+  from the newest snapshot — teleporting 30x a second while everything
+  around them moved smoothly. (The beam additionally needed its `x1,y1,
+  x2,y2` endpoints interpolated, not just `x,y`.)
+- Ad-hoc random room codes in the test contained letters the room-code
+  alphabet deliberately excludes (I/L/O, to avoid mistyping a code read
+  aloud), so the server normalized them away and the client landed in a
+  different room than it asked for.
 
 ## Swapping rendering / game engines later
 

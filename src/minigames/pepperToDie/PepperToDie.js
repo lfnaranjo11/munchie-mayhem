@@ -188,7 +188,7 @@ export class PepperToDie extends MinigameBase {
 
   getDrawables() {
     const list = this.obstacles.map((o) => ({ type: o.kind === 'choco' ? 'chocoBlock' : 'milkBlock', x: o.x, y: o.y, r: o.radius }));
-    if (this.pepper) list.push({ type: 'pepperPickup', x: this.pepper.x, y: this.pepper.y, r: this.pepper.radius, hunting: this.pepper.state === 'hunting' });
+    if (this.pepper) list.push({ id: 'pepper', type: 'pepperPickup', x: this.pepper.x, y: this.pepper.y, r: this.pepper.radius, hunting: this.pepper.state === 'hunting' });
     for (const p of this.getAlivePlayers()) {
       list.push({
         type: 'blob',

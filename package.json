@@ -8,9 +8,12 @@
     "dev": "npx --yes serve . -l 5173",
     "test": "node test/smoke.mjs",
     "test:browser": "node test/browser-boot.mjs",
-    "test:all": "node test/smoke.mjs && node test/browser-boot.mjs"
+    "test:all": "node test/smoke.mjs && node test/browser-boot.mjs && node test/network.mjs",
+    "server": "node server/node-server.mjs",
+    "test:network": "node test/network.mjs"
   },
   "devDependencies": {
-    "jsdom": "^30.0.1"
+    "jsdom": "^30.0.1",
+    "ws": "^8.21.3"
   }
 }

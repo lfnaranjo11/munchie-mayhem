@@ -17,6 +17,8 @@ import { InstructionScreen } from './ui/InstructionScreen.js';
 import { ResultsScreen } from './ui/ResultsScreen.js';
 import { JoystickOverlay } from './ui/JoystickOverlay.js';
 import { HUD } from './ui/HUD.js';
+import { OnlineMenu, getRoomFromURL, getServerURL } from './ui/OnlineMenu.js';
+import { NetworkClient } from './network/NetworkClient.js';
 
 /**
  * App - the only place that owns a DOM reference to every screen and
@@ -31,7 +33,13 @@ import { HUD } from './ui/HUD.js';
  * copy or a cached module graph otherwise looks identical to a bug, which
  * has cost real debugging time on this project already.
  */
-const BUILD = 'v0.4.0 - characters + animation';
+/**
+ * Where the online server lives. Override at runtime with ?server=ws://...
+ * which is how you point a deployed client at a local dev server.
+ */
+const DEFAULT_SERVER_URL = 'ws://localhost:8080';
+
+const BUILD = 'v0.6.1 - netcode fixes: bots, pacing, interpolation, prediction';
 
 class App {
   constructor() {
@@ -81,7 +89,29 @@ class App {
       this.zoomBtn.setAttribute('aria-label', on ? 'Zoom out to full arena' : 'Zoom in on my player');
     });
 
+    // ---- Online play ---------------------------------------------------
+    // `net` is non-null only while in an online match. When it is set,
+    // render() draws the server's interpolated snapshot instead of a
+    // locally simulated tournament - those are the only two modes.
+    this.net = null;
+    this.netState = null;
+    this.onlineMenu = new OnlineMenu(document.getElementById('online-screen'), this.profile);
+    this.onlineMenu.onJoin = (opts) => this.joinOnline(opts);
+    this.onlineMenu.onCancel = () => this.menu.show();
+
     this.menu.onStart((setup) => this.startTournament(setup));
+    this.menu.onOnline(() => {
+      this.menu.hide();
+      this.onlineMenu.show(getRoomFromURL());
+    });
+
+    // A shared ?room=CODE link should land straight in the online menu
+    // with the code filled in - no menu hunting for someone who just
+    // tapped a friend's link.
+    if (getRoomFromURL()) {
+      this.menu.hide();
+      this.onlineMenu.show(getRoomFromURL());
+    }
 
     window.addEventListener('resize', () => this.handleResize());
     // Rotating a phone fires `resize` inconsistently across browsers, and
@@ -108,6 +138,90 @@ class App {
    * see the try/catch in GameLoop.js for why that matters. Shown instead of
    * a silent frozen canvas so a bug is immediately obvious, with the actual
    * error visible right here (not just in devtools) for quick debugging. */
+  /**
+   * Draws the server's world. Structurally the same as the offline path -
+   * same renderer, same camera, same animation layer - but the drawables
+   * come from an interpolated snapshot instead of a local simulation.
+   */
+  renderOnline() {
+    const state = this.net.getInterpolatedState();
+    const arena = this.netRound?.arena;
+    if (!state || !arena) {
+      this.renderer.clear('#fdeecb');
+      return;
+    }
+    this.renderer.clear(state.bg || '#fdeecb');
+
+    const now = performance.now();
+    const renderDt = Math.min((now - this.lastRenderTime) / 1000, 0.1);
+    this.lastRenderTime = now;
+
+    const msMaxSpeed = this.netRound?.movement?.maxSpeed ?? 250;
+
+    const scale = Math.min(this.renderer.width / arena.width, this.renderer.height / arena.height);
+    const offsetX = (this.renderer.width - arena.width * scale) / 2;
+    const offsetY = (this.renderer.height - arena.height * scale) / 2;
+
+    const ctx = this.renderer.ctx;
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    ctx.scale(scale, scale);
+
+    // Animate from the interpolated snapshot. vx/vy were derived from the
+    // position delta by NetworkClient, so squash, lean and dust all work
+    // online exactly as they do offline with no extra data on the wire.
+    // Predict our own movement from the input being held right now, so
+    // the controls respond immediately rather than after a round trip.
+    const localId = this.net.localPlayerId;
+    const serverSelf = localId ? state.drawables.find((d) => d.id === localId) : null;
+    const predicted = this.net.updatePrediction(renderDt, this.input.getDirection(0), serverSelf);
+
+    const liveIds = new Set();
+    let drawables = state.drawables.map((d) => {
+      if (d.type !== 'blob' || !d.id) return d;
+      liveIds.add(d.id);
+
+      // Our own character is drawn at the predicted position; everyone
+      // else at their interpolated authoritative position.
+      const isSelf = d.id === localId;
+      const x = isSelf && predicted ? predicted.x : d.x;
+      const y = isSelf && predicted ? predicted.y : d.y;
+      const vx = isSelf && predicted ? predicted.vx : d.vx ?? 0;
+      const vy = isSelf && predicted ? predicted.vy : d.vy ?? 0;
+
+      const visual = this.visuals.get(d.id);
+      visual.update({ x, y, vx, vy }, renderDt, { maxSpeed: msMaxSpeed }, ANIMATION_DEFAULTS);
+      return {
+        ...d,
+        x,
+        y,
+        character: d.characterId ? this.characterMap.get(d.characterId) : undefined,
+        visual,
+        label: this.profile.showNameLabels ? d.label : null,
+      };
+    });
+    this.visuals.prune(liveIds);
+
+    this.particles.update(renderDt);
+    this.renderer.draw(drawables);
+    this.renderer.draw(this.particles.getDrawables());
+    ctx.restore();
+
+    if (this.touch) this.joystick.update(this.touch.getVisualState());
+
+    this.hud.update({
+      minigameName: this.netRound?.title,
+      players: (state.scores || []).map((sc) => ({
+        name: this.netRound?.players?.find((p) => p.id === sc.id)?.name ?? '',
+        score: sc.score,
+        alive: sc.alive,
+        color: '#ff6b6b',
+      })),
+      targetScore: 3,
+      timeRemaining: state.time,
+    });
+  }
+
   showCrash(err) {
     const el = document.getElementById('crash-screen');
     el.style.display = 'flex';
@@ -221,10 +335,15 @@ class App {
     });
 
     this.tournament.on('tournament:end', (champion) => {
-      this.resultsScreen.showChampion(champion, () => {
-        this.tournament = null;
-        this.menu.show();
-      });
+      const roster = this.tournament.players;
+      this.resultsScreen.showChampion(
+        champion,
+        () => {
+          this.tournament = null;
+          this.menu.show();
+        },
+        roster
+      );
     });
 
     // Nothing to zoom in on in a bots-only session, so don't offer a
@@ -235,7 +354,90 @@ class App {
     this.tournament.startNextRound();
   }
 
+  /**
+   * Connects to the server and joins a room. All the online-specific
+   * state lives behind `this.net`; when it's null the game behaves
+   * exactly as it always has offline.
+   */
+  async joinOnline({ roomCode, quick, name }) {
+    const url = getServerURL(DEFAULT_SERVER_URL);
+    this.net = new NetworkClient({
+      url,
+      onLobby: (msg) => this.onlineMenu.updateLobby(msg.players),
+      onRoundStart: (msg) => {
+        this.onlineMenu.hide();
+        this.netRound = msg;
+        // Identify our own character so we can predict its movement
+        // locally instead of waiting a round trip for every input.
+        const mine = msg.players?.find((p) => p.inputSlot === this.net.slot);
+        this.net.setLocalPlayer(mine?.id ?? null, msg.movement, msg.arena);
+        this.camera.reset();
+        this.particles.clear();
+        this.visuals.clear();
+        this.instructionScreen.show(
+          { icon: msg.icon, title: msg.title, instructions: msg.instructions },
+          0, // online rounds start on the server's timer, not a ready-up
+          () => {}
+        );
+      },
+      onRoundEnd: (msg) => {
+        this.resultsScreen.showRoundResult(
+          {
+            result: { winners: msg.winners },
+            players: msg.standings.map((s) => ({ ...s, characterId: this.netCharacterFor(s.id) })),
+            roundIndex: msg.roundIndex,
+          },
+          () => {}
+        );
+        // The server drives the schedule, so auto-dismiss rather than
+        // waiting on a click that would desync this client from the room.
+        // Match the server's pacing rather than guessing: a client delay
+        // longer than the server's round-end timer left the overlay
+        // covering the start of the next round.
+        const holdMs = Math.max(800, (msg.roundSeconds ?? 2.5) * 1000 - 400);
+        setTimeout(() => {
+          document.getElementById('results-screen').style.display = 'none';
+        }, holdMs);
+      },
+      onTournamentEnd: (msg) => {
+        this.resultsScreen.showChampion({ id: msg.championId, name: msg.championName }, () => {
+          this.leaveOnline();
+        });
+      },
+      onError: (msg) => this.onlineMenu.setStatus(`Error: ${msg.code}`),
+      onStatus: (status) => {
+        if (status === 'disconnected') this.onlineMenu.setStatus('Disconnected from the server.');
+      },
+    });
+
+    try {
+      const { roomCode: joined } = await this.net.connect({ roomCode, quick, name });
+      this.onlineMenu.showLobby(joined, [], () => this.net.sendReady());
+    } catch (err) {
+      this.onlineMenu.setStatus(err.message || 'Could not connect.');
+      this.net = null;
+    }
+  }
+
+  netCharacterFor(playerId) {
+    return this.netRound?.players?.find((p) => p.id === playerId)?.characterId;
+  }
+
+  leaveOnline() {
+    this.net?.disconnect();
+    this.net = null;
+    this.netRound = null;
+    this.netState = null;
+    this.menu.show();
+  }
+
   update(dt) {
+    if (this.net) {
+      // Online: we don't simulate. Just report this player's intent; the
+      // server owns the world and sends back snapshots.
+      this.net.setInput(this.input.getDirection(0));
+      return;
+    }
     if (this.tournament?.isRoundActive()) {
       const inputs = this.tournament.collectInputs(this.input);
       this.tournament.update(dt, inputs);
@@ -332,6 +534,10 @@ class App {
   }
 
   render() {
+    if (this.net) {
+      this.renderOnline();
+      return;
+    }
     const mg = this.tournament?.currentMinigame;
     // A minigame exists (so the instructions screen can show its title)
     // well before it's actually started - onStart() only runs once the
