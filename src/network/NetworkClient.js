@@ -41,7 +41,7 @@ const PREDICTION_CORRECTION_RATE = 0.18;
 const INTERPOLATED_FIELDS = ['x', 'y', 'x1', 'y1', 'x2', 'y2', 'r'];
 
 export class NetworkClient {
-  constructor({ url, onLobby, onRoundStart, onRoundEnd, onTournamentEnd, onError, onStatus }) {
+  constructor({ url, onLobby, onRoundStart, onRoundEnd, onTournamentEnd, onError, onStatus, onPlayerStatus }) {
     this.url = url;
     this.onLobby = onLobby;
     this.onRoundStart = onRoundStart;
@@ -49,6 +49,7 @@ export class NetworkClient {
     this.onTournamentEnd = onTournamentEnd;
     this.onError = onError;
     this.onStatus = onStatus;
+    this.onPlayerStatus = onPlayerStatus;
 
     this.ws = null;
     this.connected = false;
@@ -108,7 +109,10 @@ export class NetworkClient {
       ws.addEventListener('close', () => {
         this.connected = false;
         this._stopTimers();
-        this.onStatus?.('disconnected');
+        // A close we didn't ask for is a dropped connection, which the UI
+        // must surface - a frozen screen with no explanation is the worst
+        // possible failure mode.
+        this.onStatus?.(this._intentionalClose ? 'left' : 'disconnected');
       });
 
       ws.addEventListener('error', () => {
@@ -147,6 +151,9 @@ export class NetworkClient {
         break;
       case S2C.PONG:
         this.latency = Date.now() - msg.ts;
+        break;
+      case S2C.PLAYER_STATUS:
+        this.onPlayerStatus?.(msg);
         break;
       case S2C.ERROR:
         this.onError?.(msg);
@@ -335,6 +342,7 @@ export class NetworkClient {
   }
 
   disconnect() {
+    this._intentionalClose = true;
     this._stopTimers();
     this.ws?.close();
     this.ws = null;

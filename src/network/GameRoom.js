@@ -43,6 +43,20 @@ const TARGET_TOTAL_PLAYERS = MAX_PLAYERS;
 const INSTRUCTION_SECONDS = 2.5;
 const ROUND_END_SECONDS = 2.5;
 
+/**
+ * If a player's input goes quiet for this long, a bot takes the wheel so
+ * the match doesn't stall around a frozen character. Control is handed
+ * straight back the moment their input resumes - this is a lag/AFK
+ * cushion, not a kick. 3s is comfortably longer than any normal network
+ * hiccup at a 30Hz input rate (which is a packet every 33ms).
+ */
+const LAG_TAKEOVER_SECONDS = 3;
+
+/** How long the champion screen shows before the room returns to the
+ * lobby for a rematch. Without this the room was simply stuck in
+ * 'finished' forever and everyone had to reload. */
+const REMATCH_SECONDS = 8;
+
 export class GameRoom {
   /**
    * @param {object} opts
@@ -69,7 +83,13 @@ export class GameRoom {
     this.snapshotAccumulator = 0;
     this.instructionTimer = 0;
     this.roundEndTimer = 0;
+    this.rematchTimer = 0;
     this.seq = 0;
+    /** Monotonic room clock in seconds, advanced by tick(). Used for lag
+     * detection - deliberately not wall-clock, so it can't jump. */
+    this.clock = 0;
+    /** slot -> room-clock time of that seat's last input. */
+    this.lastInputAt = new Map();
   }
 
   get playerCount() {
@@ -97,8 +117,12 @@ export class GameRoom {
     let slot = 0;
     while (used.has(slot)) slot++;
 
-    this.connections.set(connId, { connId, name: name || `Player ${slot + 1}`, slot, ready: false });
+    // Trim and bound the display name; fall back to a seat label. Names
+    // are echoed to every client, so never trust the length.
+    const cleanName = String(name || '').trim().slice(0, 12) || `Player ${slot + 1}`;
+    this.connections.set(connId, { connId, name: cleanName, slot, ready: false, takenOver: false });
     this.inputs.set(slot, { x: 0, y: 0 });
+    this.lastInputAt.set(slot, this.clock);
 
     this.send(connId, {
       t: S2C.WELCOME,
@@ -145,6 +169,10 @@ export class GameRoom {
       case 'input':
         // Always sanitized - a client could send anything.
         this.inputs.set(conn.slot, sanitizeInput(msg.d));
+        this.lastInputAt.set(conn.slot, this.clock);
+        // Input is proof of life: if a bot had taken over during a lag
+        // spike, give control straight back.
+        if (conn.takenOver) this.restoreControl(conn);
         break;
       case 'ready':
         conn.ready = true;
@@ -199,6 +227,15 @@ export class GameRoom {
         p.inputSlot = slots[i] ?? null;
       });
 
+    // Apply the names people actually typed. TournamentManager creates
+    // generic "Player 1/2/3" labels; without this the name field in the
+    // lobby was collected, shown in the lobby list, and then silently
+    // ignored for the entire match.
+    for (const conn of this.connections.values()) {
+      const player = this.tournament.players.find((p) => p.inputSlot === conn.slot);
+      if (player) player.name = conn.name;
+    }
+
     this.tournament.on('round:end', (payload) => {
       this.phase = 'roundEnd';
       this.roundEndTimer = ROUND_END_SECONDS;
@@ -215,7 +252,21 @@ export class GameRoom {
 
     this.tournament.on('tournament:end', (champion) => {
       this.phase = 'finished';
-      this.broadcast({ t: S2C.TOURNAMENT_END, championId: champion.id, championName: champion.name });
+      this.rematchTimer = REMATCH_SECONDS;
+      this.broadcast({
+        t: S2C.TOURNAMENT_END,
+        championId: champion.id,
+        championName: champion.name,
+        // Tell clients when the room returns to the lobby so they can
+        // show a countdown instead of appearing frozen on the win screen.
+        lobbyInSeconds: REMATCH_SECONDS,
+        standings: this.tournament.players.map((p) => ({
+          id: p.id,
+          name: p.name,
+          score: p.score,
+          characterId: p.characterId,
+        })),
+      });
     });
 
     this.beginRound();
@@ -253,6 +304,38 @@ export class GameRoom {
     });
   }
 
+  /**
+   * Hands a lagging/AFK seat to a bot. The player keeps their slot and
+   * identity - only `isBot` flips, so TournamentManager starts asking
+   * BotBrain for their input instead of the network. Reversible.
+   */
+  takeOverWithBot(conn) {
+    const player = this.tournament?.players.find((p) => p.inputSlot === conn.slot);
+    if (!player || player.isBot) return;
+    player.isBot = true;
+    conn.takenOver = true;
+    this.broadcast({ t: S2C.PLAYER_STATUS, slot: conn.slot, name: conn.name, takenOver: true });
+  }
+
+  restoreControl(conn) {
+    const player = this.tournament?.players.find((p) => p.inputSlot === conn.slot);
+    conn.takenOver = false;
+    if (player) player.isBot = false;
+    this.broadcast({ t: S2C.PLAYER_STATUS, slot: conn.slot, name: conn.name, takenOver: false });
+  }
+
+  /** Returns the room to the lobby so everyone can rematch without
+   * reloading the page. */
+  resetToLobby() {
+    this.phase = 'lobby';
+    this.tournament = null;
+    for (const conn of this.connections.values()) {
+      conn.ready = false;
+      conn.takenOver = false;
+    }
+    this.broadcastLobby();
+  }
+
   /** Input source shaped like InputManager, reading the latest network
    * input per seat - so TournamentManager needs no online-specific code. */
   makeInputSource() {
@@ -271,6 +354,15 @@ export class GameRoom {
    * interpolated client-side.
    */
   tick(dt) {
+    this.clock += dt;
+
+    if (this.phase === 'finished') {
+      // Hold on the champion screen, then hand the room back to the lobby.
+      this.rematchTimer -= dt;
+      if (this.rematchTimer <= 0) this.resetToLobby();
+      return;
+    }
+
     if (this.phase === 'instructions') {
       this.instructionTimer -= dt;
       if (this.instructionTimer <= 0) {
@@ -287,6 +379,13 @@ export class GameRoom {
     }
 
     if (this.phase !== 'playing' || !this.tournament) return;
+
+    // Lag/AFK sweep: hand quiet seats to a bot so nobody is stuck playing
+    // around a statue, and take them back as soon as input returns.
+    for (const conn of this.connections.values()) {
+      const quietFor = this.clock - (this.lastInputAt.get(conn.slot) ?? this.clock);
+      if (!conn.takenOver && quietFor > LAG_TAKEOVER_SECONDS) this.takeOverWithBot(conn);
+    }
 
     const inputSource = this.makeInputSource();
     const inputs = this.tournament.collectInputs(inputSource);

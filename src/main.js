@@ -39,7 +39,7 @@ import { NetworkClient } from './network/NetworkClient.js';
  */
 const DEFAULT_SERVER_URL = 'ws://localhost:8080';
 
-const BUILD = 'v0.6.1 - netcode fixes: bots, pacing, interpolation, prediction';
+const BUILD = 'v0.7.0 - online UX: status, takeover, self marker, rematch';
 
 class App {
   constructor() {
@@ -147,9 +147,14 @@ class App {
     const state = this.net.getInterpolatedState();
     const arena = this.netRound?.arena;
     if (!state || !arena) {
+      // No world yet. Say so - a blank canvas here is indistinguishable
+      // from a crash, and this is precisely when players are least sure
+      // the thing is working.
       this.renderer.clear('#fdeecb');
+      if (this.net.connected && this.netRound) this.showNetStatus('Loading the arena…');
       return;
     }
+    this.showNetStatus(null);
     this.renderer.clear(state.bg || '#fdeecb');
 
     const now = performance.now();
@@ -184,6 +189,7 @@ class App {
       // Our own character is drawn at the predicted position; everyone
       // else at their interpolated authoritative position.
       const isSelf = d.id === localId;
+      liveIds.add(d.id);
       const x = isSelf && predicted ? predicted.x : d.x;
       const y = isSelf && predicted ? predicted.y : d.y;
       const vx = isSelf && predicted ? predicted.vx : d.vx ?? 0;
@@ -197,7 +203,11 @@ class App {
         y,
         character: d.characterId ? this.characterMap.get(d.characterId) : undefined,
         visual,
-        label: this.profile.showNameLabels ? d.label : null,
+        isSelf,
+        // Always label your OWN character, even on a phone where labels
+        // are otherwise hidden - knowing which blob is yours matters more
+        // than the clutter it costs.
+        label: this.profile.showNameLabels || isSelf ? d.label : null,
       };
     });
     this.visuals.prune(liveIds);
@@ -211,15 +221,30 @@ class App {
 
     this.hud.update({
       minigameName: this.netRound?.title,
-      players: (state.scores || []).map((sc) => ({
-        name: this.netRound?.players?.find((p) => p.id === sc.id)?.name ?? '',
-        score: sc.score,
-        alive: sc.alive,
-        color: '#ff6b6b',
-      })),
+      players: (state.scores || []).map((sc) => {
+        const info = this.netRound?.players?.find((p) => p.id === sc.id);
+        const character = info?.characterId ? this.characterMap.get(info.characterId) : null;
+        return {
+          name: (info?.name ?? '') + (sc.id === localId ? ' (you)' : ''),
+          score: sc.score,
+          alive: sc.alive,
+          color: character?.fill ?? '#ff6b6b',
+        };
+      }),
       targetScore: 3,
       timeRemaining: state.time,
     });
+  }
+
+  /** Brief, non-blocking message for things the player should notice but
+   * doesn't need to act on (a bot taking over, a rematch countdown). */
+  showToast(text) {
+    const el = document.getElementById('toast');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.add('is-visible');
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => el.classList.remove('is-visible'), 3200);
   }
 
   showCrash(err) {
@@ -355,17 +380,63 @@ class App {
   }
 
   /**
+   * Shows a full-screen status message during online play. A blank canvas
+   * while the first snapshot is in flight reads as "the game is broken",
+   * which is exactly the wrong signal at the most fragile moment.
+   * @param {string|null} text null hides the overlay
+   * @param {{spinner?: boolean, actions?: Array<{label:string, onClick:Function}>}} [opts]
+   */
+  showNetStatus(text, opts = {}) {
+    const el = document.getElementById('net-status');
+    if (!text) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    el.style.display = 'flex';
+    el.innerHTML = `
+      <div class="net-status-card">
+        ${opts.spinner === false ? '' : '<div class="net-spinner"></div>'}
+        <p>${text}</p>
+        <div class="net-actions"></div>
+      </div>
+    `;
+    const actions = el.querySelector('.net-actions');
+    for (const a of opts.actions ?? []) {
+      const btn = document.createElement('button');
+      btn.textContent = a.label;
+      btn.addEventListener('click', a.onClick);
+      actions.appendChild(btn);
+    }
+  }
+
+  /**
    * Connects to the server and joins a room. All the online-specific
    * state lives behind `this.net`; when it's null the game behaves
    * exactly as it always has offline.
    */
   async joinOnline({ roomCode, quick, name }) {
     const url = getServerURL(DEFAULT_SERVER_URL);
+    this._lastName = name ?? this._lastName;
+    this.showNetStatus(quick ? 'Finding a match…' : 'Connecting…');
     this.net = new NetworkClient({
       url,
-      onLobby: (msg) => this.onlineMenu.updateLobby(msg.players),
+      onLobby: (msg) => {
+        this.onlineMenu.updateLobby(msg.players);
+        // The server sends the room back to 'lobby' after a match ends,
+        // so a finished game returns everyone to the waiting room for a
+        // rematch instead of stranding them on the win screen.
+        if (msg.phase === 'lobby' && this.netRound) {
+          this.netRound = null;
+          this.netState = null;
+          document.getElementById('results-screen').style.display = 'none';
+          this.showNetStatus(null);
+          this.onlineMenu.showLobby(this.net.roomCode, msg.players, () => this.net.sendReady());
+        }
+      },
       onRoundStart: (msg) => {
         this.onlineMenu.hide();
+        this.showNetStatus(null);
         this.netRound = msg;
         // Identify our own character so we can predict its movement
         // locally instead of waiting a round trip for every input.
@@ -395,25 +466,61 @@ class App {
         // longer than the server's round-end timer left the overlay
         // covering the start of the next round.
         const holdMs = Math.max(800, (msg.roundSeconds ?? 2.5) * 1000 - 400);
-        setTimeout(() => {
+        clearTimeout(this._resultsTimer);
+        this._resultsTimer = setTimeout(() => {
           document.getElementById('results-screen').style.display = 'none';
         }, holdMs);
       },
       onTournamentEnd: (msg) => {
-        this.resultsScreen.showChampion({ id: msg.championId, name: msg.championName }, () => {
-          this.leaveOnline();
-        });
+        // CRITICAL: cancel the round-end auto-hide. It targets the same
+        // overlay element, so it would fire a second or two later and
+        // silently wipe the champion screen - which is why the win
+        // screen appeared on some devices and not others. Pure race.
+        clearTimeout(this._resultsTimer);
+        this.showNetStatus(null);
+
+        const roster = (msg.standings ?? []).map((p) => ({ ...p, color: '#ff6b6b' }));
+        this.resultsScreen.showChampion(
+          { id: msg.championId, name: msg.championName },
+          () => this.leaveOnline(),
+          roster
+        );
+        // Tell people what happens next rather than leaving the screen up
+        // with no exit.
+        this.showToast(`Back to the lobby in ${msg.lobbyInSeconds ?? 8}s`);
       },
       onError: (msg) => this.onlineMenu.setStatus(`Error: ${msg.code}`),
+      onPlayerStatus: (msg) => {
+        // Someone's connection went quiet and a bot stepped in (or they
+        // came back). Everyone should see it, so a suddenly-erratic
+        // teammate isn't mistaken for a bug.
+        const who = msg.slot === this.net?.slot ? 'You' : msg.name;
+        const verb = msg.takenOver
+          ? `${who === 'You' ? 'Your connection dropped — a bot' : `${who} lagged out — a bot`} took over`
+          : `${who === 'You' ? 'You are' : `${who} is`} back in control`;
+        this.showToast(verb);
+      },
       onStatus: (status) => {
-        if (status === 'disconnected') this.onlineMenu.setStatus('Disconnected from the server.');
+        if (status === 'disconnected') {
+          // Freezing with no explanation was the old behaviour. Say what
+          // happened and always offer a way out.
+          this.showNetStatus('Connection lost.', {
+            spinner: false,
+            actions: [
+              { label: 'Reconnect', onClick: () => { this.showNetStatus('Reconnecting…'); this.joinOnline({ roomCode: this.net?.roomCode, name: this._lastName }); } },
+              { label: 'Main menu', onClick: () => this.leaveOnline() },
+            ],
+          });
+        }
       },
     });
 
     try {
       const { roomCode: joined } = await this.net.connect({ roomCode, quick, name });
+      this.showNetStatus(null);
       this.onlineMenu.showLobby(joined, [], () => this.net.sendReady());
     } catch (err) {
+      this.showNetStatus(null);
       this.onlineMenu.setStatus(err.message || 'Could not connect.');
       this.net = null;
     }

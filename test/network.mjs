@@ -45,6 +45,8 @@ class TestClient {
     this.champion = null;
     this.welcome = null;
     this.errors = [];
+    this.playerStatus = [];
+    this.lobbies = [];
   }
 
   connect(opts = {}) {
@@ -76,6 +78,12 @@ class TestClient {
             break;
           case S2C.TOURNAMENT_END:
             this.champion = msg;
+            break;
+          case S2C.PLAYER_STATUS:
+            this.playerStatus.push(msg);
+            break;
+          case S2C.LOBBY:
+            this.lobbies.push(msg);
             break;
           case S2C.ERROR:
             this.errors.push(msg);
@@ -259,6 +267,18 @@ async function main() {
     clients.forEach((c) => c.close());
     await sleep(300);
 
+    // ---- The typed name must reach the actual match -----------------------
+    // The name was collected in the lobby, shown in the lobby list, and
+    // then silently ignored: TournamentManager labelled everyone
+    // "Player 1/2/3" and nothing ever applied the real one.
+    const named = roundInfo.players.filter((p) => !p.isBot).map((p) => p.name).sort();
+    assert.deepStrictEqual(
+      named,
+      ['P1', 'P2', 'P3', 'P4'],
+      `players should carry the names they typed, got ${JSON.stringify(named)}`
+    );
+    console.log('✓ typed names reach the in-game players');
+
     // ---- Bots fill a half-empty room --------------------------------------
     // The original bug: botCount was computed against a floor of 2 total
     // players, so a 2-human room got ZERO bots while the lobby promised
@@ -281,6 +301,28 @@ async function main() {
     assert.strictEqual(duoBots.length, 2, `2 humans should get 2 bots, got ${duoBots.length}`);
     console.log(`✓ 2-human room filled to ${duoRound.players.length} with ${duoBots.length} bots`);
 
+    // ---- A silent client gets taken over by a bot -------------------------
+    // duo[1] simply stops sending input (simulating a lag spike or an AFK
+    // player). The server should hand their character to a bot so the
+    // match doesn't play out around a statue, then give it back.
+    const takeoverTimer = setInterval(() => duo[0].sendInput(), 60);
+    await sleep(5000);
+
+    const takenOver = duo[1].playerStatus.filter((m) => m.takenOver);
+    assert.ok(
+      takenOver.length > 0,
+      'a client that stops sending input should be taken over by a bot'
+    );
+    console.log(`✓ silent client taken over by a bot after ~${3}s`);
+
+    // Resuming input hands control straight back.
+    duo[1].sendInput();
+    await sleep(600);
+    const restored = duo[1].playerStatus.filter((m) => !m.takenOver);
+    assert.ok(restored.length > 0, 'control should return when input resumes');
+    console.log('✓ control returns to the player when their input resumes');
+
+    clearInterval(takeoverTimer);
     duo.forEach((c) => c.close());
     await sleep(200);
 

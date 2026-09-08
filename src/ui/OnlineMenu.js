@@ -34,7 +34,8 @@ export class OnlineMenu {
         <p class="online-or">or</p>
 
         <label class="online-field">Room code
-          <input type="text" id="room-code" maxlength="4" placeholder="ABCD" value="${prefillCode}" autocomplete="off" />
+          <input type="text" id="room-code" maxlength="4" placeholder="ABCD" value="${prefillCode}" autocomplete="off" inputmode="text" />
+          <span class="field-hint">Letters and numbers. I, L and O aren't used, so codes can't be misread.</span>
         </label>
         <button id="join-btn" class="secondary">Join / Create Room</button>
 
@@ -44,9 +45,16 @@ export class OnlineMenu {
     `;
 
     const codeInput = this.root.querySelector('#room-code');
-    // Normalize as they type, so a lowercase or punctuated code still works.
+    // Normalize as they type, so a lowercase or punctuated code still
+    // works. If characters get dropped, say why - silently eating a
+    // letter someone just typed feels like a broken input box.
     codeInput.addEventListener('input', () => {
-      codeInput.value = normalizeRoomCode(codeInput.value);
+      const before = codeInput.value;
+      const after = normalizeRoomCode(before);
+      codeInput.value = after;
+      if (after.length < before.replace(/\s/g, '').length) {
+        this.setStatus("I, L and O aren't used in room codes.");
+      }
     });
 
     this.root.querySelector('#quick-btn').addEventListener('click', () => {

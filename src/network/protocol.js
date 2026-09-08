@@ -41,6 +41,7 @@ export const S2C = {
   SNAPSHOT: 'snapshot', // authoritative world state
   ROUND_END: 'roundEnd',
   TOURNAMENT_END: 'tournamentEnd',
+  PLAYER_STATUS: 'playerStatus', // someone was taken over by a bot, or came back
   ERROR: 'error',
   PONG: 'pong',
 };

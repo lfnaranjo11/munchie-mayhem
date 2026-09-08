@@ -53,6 +53,10 @@ export function drawCharacter(ctx, opts) {
   // Badges are drawn OUTSIDE the squash transform so they don't deform
   // with the body - a stretched crown or a wobbling timer bar reads as a
   // bug rather than as animation.
+  // A clear "this is you" marker. Essential on a small phone screen with
+  // four similar-looking characters bouncing around - without it players
+  // genuinely lose track of which one they control.
+  if (flags.isSelf) drawSelfMarker(ctx, x, y + bob - radius - (flags.crowned ? 34 : 16), radius);
   if (flags.crowned) drawCrownOn(ctx, x, y + bob - radius - 12, radius * 0.55);
   if (typeof flags.timerFrac === 'number') drawTimerBar(ctx, x, y - radius - 22, radius, flags.timerFrac);
   if (flags.label) drawLabel(ctx, x, y + radius + 16, flags.label);
@@ -307,6 +311,33 @@ function drawFace(ctx, r, expression, blink, facing) {
     ctx.arc(gaze, mouthY - r * 0.04, r * 0.14, 0.2 * Math.PI, 0.8 * Math.PI);
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/** A bobbing chevron above your own character, plus a soft ring at its
+ * feet. Two cues rather than one, because the chevron can be clipped at
+ * the top edge of the arena. */
+function drawSelfMarker(ctx, x, y, radius) {
+  const t = performance.now() / 1000;
+  const bob = Math.sin(t * 4) * 3;
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = 'rgba(60,40,25,0.45)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y + bob + 9);
+  ctx.lineTo(x - 8, y + bob - 4);
+  ctx.lineTo(x + 8, y + bob - 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(x, y + radius * 2.05 + 16, radius * 0.85, radius * 0.3, 0, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 

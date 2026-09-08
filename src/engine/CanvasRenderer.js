@@ -104,6 +104,7 @@ export class CanvasRenderer {
         onFire: d.onFire,
         crowned: d.crowned,
         timerFrac: d.timerFrac,
+        isSelf: d.isSelf,
         label: d.label,
         face: d.face,
       },

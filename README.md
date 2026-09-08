@@ -420,6 +420,27 @@ keep in sync. Any new minigame is network-ready with no extra work.
 Velocity isn't sent; the client derives it by differencing consecutive
 snapshots, which it buffers for interpolation anyway.
 
+### Online UX / connection states
+
+Multiplayer fails in ways single-player doesn't, so the client always says
+what's happening rather than freezing:
+
+- **Loading** — a spinner and "Loading the arena…" while the first
+  snapshot is in flight. A blank canvas here is indistinguishable from a
+  crash.
+- **Connection lost** — an explicit message with **Reconnect** and **Main
+  menu** buttons. Never a frozen screen.
+- **Bot takeover** — if a player's input goes quiet for 3s (lag spike or
+  AFK), a bot takes their character so the match doesn't play out around a
+  statue. Control returns the instant their input resumes. Everyone gets a
+  toast so a suddenly-erratic teammate isn't mistaken for a bug.
+- **"This is you"** — a bobbing chevron and a ring on your own character,
+  your name always labelled (even on phones where labels are otherwise
+  hidden), and a `(you)` tag in the HUD. With four similar characters on a
+  small screen, players genuinely lose track of which one they control.
+- **Rematch** — the room returns to the lobby ~8s after a champion is
+  crowned, so nobody has to reload.
+
 ### Hosting & cost
 
 Cloudflare Durable Objects, because a game room is exactly what a DO is:
@@ -436,6 +457,36 @@ when empty. Rooms are isolated by construction and need no database.
 At 4 players sending input at 20Hz: ~14k billed requests/hour → roughly
 **70 hours of live 4-player play per month on the free tier**, several
 hundred on the $5 plan. Deploy with `cd server/cloudflare && npx wrangler deploy`.
+
+#### If you'd rather use a normal cloud provider
+
+`server/node-server.mjs` is an ordinary Node WebSocket server — it runs
+anywhere. Two things to know before picking:
+
+**WebSockets keep an instance alive.** On scale-to-zero platforms
+(Cloud Run, App Runner, Container Apps) an open socket counts as an
+active instance for as long as it's open, so the usual "you only pay per
+request" intuition doesn't hold. Cloud Run's own docs call this out.
+Roughly: 1 vCPU / 512 MiB always-allocated lands near **$45–50/month**,
+versus **~$10–12/month** for a single always-warm min-instance on a small
+service. A plain **e2-micro / t4g.small VM is ~$5–10/month** and, for one
+game server, is both cheaper and simpler.
+
+**Don't scale it horizontally without thought.** Rooms live in memory in
+the process that owns them. Two instances behind a load balancer means
+two players can land on different instances and never see each other.
+Cloud Run's session affinity is explicitly best-effort, which is not
+good enough for this. Options, in order of effort: run a **single
+instance** (fine well past your first few hundred concurrent players),
+add **sticky routing by room code**, or move room state to Redis. This
+is precisely the problem Durable Objects solve for free — a room code
+deterministically maps to one instance.
+
+**Recommendation:** a single small VM (or one Cloud Run instance with
+`min-instances=1`, `max-instances=1`) is the cheapest, simplest thing
+that works, and it's plain Node so your existing cloud tooling applies.
+Move to Durable Objects when you want many concurrent rooms without
+thinking about sharding.
 
 ### Latency budget
 
