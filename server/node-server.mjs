@@ -12,11 +12,17 @@
  * Then open: http://localhost:5173/?server=ws://localhost:8080
  */
 import { WebSocketServer } from 'ws';
+import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { GameRoom } from '../src/network/GameRoom.js';
 import { SIM_HZ, S2C, ERROR_CODES, PROTOCOL_VERSION, decode, encode, generateRoomCode, normalizeRoomCode } from '../src/network/protocol.js';
 
+// Cloud Run (and most PaaS) inject the port to listen on. Never hardcode it.
 const PORT = Number(process.env.PORT || 8080);
+// Must bind 0.0.0.0, not localhost: a container listening only on the
+// loopback interface is unreachable from outside, and the platform's
+// startup probe will fail with no obvious error.
+const HOST = process.env.HOST || '0.0.0.0';
 
 /** roomCode -> { room, sockets: Map<connId, ws>, timer } */
 const rooms = new Map();
@@ -78,8 +84,32 @@ function findQuickMatchRoom() {
   return code;
 }
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`Munchie Mayhem server listening on ws://localhost:${PORT}`);
+/**
+ * A real HTTP server that the WebSocket server attaches to.
+ *
+ * This used to be `new WebSocketServer({ port })`, which spins up an HTTP
+ * server with NO request handler - so a plain GET (exactly what a
+ * platform health check or startup probe sends) got no response at all
+ * and hung until it timed out. On Cloud Run that reads as "the container
+ * failed to start" with nothing useful in the logs.
+ */
+const httpServer = createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+    return;
+  }
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('not found');
+});
+
+const wss = new WebSocketServer({ server: httpServer });
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`Munchie Mayhem server listening on ${HOST}:${PORT}`);
+  console.log(`  health:    http://localhost:${PORT}/health`);
+  console.log(`  websocket: ws://localhost:${PORT}`);
+});
 
 wss.on('connection', (ws) => {
   const connId = randomUUID();

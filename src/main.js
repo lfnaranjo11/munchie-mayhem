@@ -19,6 +19,7 @@ import { JoystickOverlay } from './ui/JoystickOverlay.js';
 import { HUD } from './ui/HUD.js';
 import { OnlineMenu, getRoomFromURL, getServerURL } from './ui/OnlineMenu.js';
 import { NetworkClient } from './network/NetworkClient.js';
+import { resolveServerURL } from '../config/network.config.js';
 
 /**
  * App - the only place that owns a DOM reference to every screen and
@@ -33,12 +34,6 @@ import { NetworkClient } from './network/NetworkClient.js';
  * copy or a cached module graph otherwise looks identical to a bug, which
  * has cost real debugging time on this project already.
  */
-/**
- * Where the online server lives. Override at runtime with ?server=ws://...
- * which is how you point a deployed client at a local dev server.
- */
-const DEFAULT_SERVER_URL = 'ws://localhost:8080';
-
 const BUILD = 'v0.7.0 - online UX: status, takeover, self marker, rematch';
 
 class App {
@@ -416,7 +411,7 @@ class App {
    * exactly as it always has offline.
    */
   async joinOnline({ roomCode, quick, name }) {
-    const url = getServerURL(DEFAULT_SERVER_URL);
+    const url = getServerURL(resolveServerURL());
     this._lastName = name ?? this._lastName;
     this.showNetStatus(quick ? 'Finding a match…' : 'Connecting…');
     this.net = new NetworkClient({
@@ -521,9 +516,29 @@ class App {
       this.onlineMenu.showLobby(joined, [], () => this.net.sendReady());
     } catch (err) {
       this.showNetStatus(null);
-      this.onlineMenu.setStatus(err.message || 'Could not connect.');
+      this.onlineMenu.setStatus(this.explainConnectionFailure(url, err));
       this.net = null;
     }
+  }
+
+  /**
+   * Turns an opaque WebSocket failure into something actionable. The
+   * browser deliberately gives almost no detail on a failed socket (it's
+   * a security measure), so the common deployment mistakes have to be
+   * inferred from the URL and page context.
+   */
+  explainConnectionFailure(url, err) {
+    const securePage = window.location.protocol === 'https:';
+    if (securePage && url.startsWith('ws://')) {
+      return 'Blocked: this page is HTTPS but the server URL is ws://. Use wss:// — browsers refuse insecure sockets from a secure page.';
+    }
+    if (url.includes('localhost') && window.location.hostname !== 'localhost') {
+      return 'The server URL still points at localhost. Set SERVER_URL in config/network.config.js to your deployed server.';
+    }
+    if (/:\d+/.test(url.replace(/^wss?:\/\//, '')) && url.includes('.run.app')) {
+      return "Cloud Run URLs don't take a port. Use wss://your-service.run.app with no :port.";
+    }
+    return err?.message || 'Could not reach the game server.';
   }
 
   netCharacterFor(playerId) {

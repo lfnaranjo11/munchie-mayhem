@@ -380,7 +380,8 @@ npm run dev           # serve the client
 ```
 
 Then open `http://localhost:5173/` → **Play Online**. To point a client at
-a different server: `?server=ws://your-host:8080`. A shared
+a different server: `?server=wss://your-host` (see
+`config/network.config.js` to set a permanent default). A shared
 `?room=ABCD` link joins that room directly.
 
 ### Architecture: server-authoritative
@@ -457,6 +458,47 @@ when empty. Rooms are isolated by construction and need no database.
 At 4 players sending input at 20Hz: ~14k billed requests/hour → roughly
 **70 hours of live 4-player play per month on the free tier**, several
 hundred on the $5 plan. Deploy with `cd server/cloudflare && npx wrangler deploy`.
+
+#### Deploying to Cloud Run
+
+```bash
+# from the repo root (the server imports shared code from ../src)
+gcloud run deploy munchie-mayhem-server \
+  --source . \
+  --dockerfile server/Dockerfile \
+  --allow-unauthenticated \
+  --region us-central1 \
+  --min-instances=1 --max-instances=1 \
+  --no-cpu-throttling \
+  --timeout=3600
+```
+
+Then set `SERVER_URL` in `config/network.config.js` to
+`wss://your-service-xxxxx-uc.a.run.app` and redeploy the client.
+
+**The five flags above are not optional — each maps to a way this breaks:**
+
+| Flag | Why |
+|---|---|
+| `--timeout=3600` | Cloud Run's request timeout applies to WebSocket connections, and the default is **5 minutes**. Without this, every match silently dies mid-round at the 5-minute mark. |
+| `--no-cpu-throttling` | By default CPU is only allocated *during request processing*. The authoritative game loop is a `setInterval`, so a throttled instance runs the match in slow motion or stalls it. |
+| `--min-instances=1` | Avoids a cold start on the first join, and keeps the room process warm. |
+| `--max-instances=1` | **Rooms live in memory in the process that owns them.** With two instances behind the load balancer, two players can land on different ones and never see each other. Cloud Run's session affinity is explicitly best-effort, which isn't sufficient. One instance handles far more concurrent players than you'll have soon. |
+| `--allow-unauthenticated` | Otherwise the browser's WebSocket handshake is rejected. |
+
+**Client-side checklist if you can't connect:**
+
+1. **`wss://`, not `ws://`.** Cloud Run terminates TLS and serves on 443. A browser on an `https://` page will refuse an insecure `ws://` socket outright (mixed content) — this is the most common cause of "works locally, fails deployed". The client now detects this and says so explicitly instead of failing silently.
+2. **No port in the URL.** `wss://svc-xxxx.run.app`, never `wss://svc-xxxx.run.app:8080`.
+3. **Check the health endpoint first:** `curl https://your-service.run.app/health` should return `ok`. If that fails, it's a deployment problem, not a WebSocket one. (The server previously had *no* HTTP handler at all, so plain GETs — exactly what a startup probe sends — hung with no response. Fixed.)
+4. **Test the socket directly**, bypassing the client:
+   ```bash
+   npx wscat -c wss://your-service.run.app
+   ```
+5. **Check logs** for `listening on 0.0.0.0:$PORT`. Binding to `localhost` inside a container makes it unreachable from outside — the server now binds `0.0.0.0` explicitly.
+
+You can also point a local client at the deployed server without redeploying:
+`http://localhost:5173/?server=wss://your-service.run.app`
 
 #### If you'd rather use a normal cloud provider
 
