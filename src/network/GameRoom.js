@@ -57,6 +57,25 @@ const LAG_TAKEOVER_SECONDS = 3;
  * 'finished' forever and everyone had to reload. */
 const REMATCH_SECONDS = 8;
 
+/**
+ * How long a room may sit in the lobby with nobody ready before the
+ * server closes it.
+ *
+ * THIS IS A COST CONTROL, not a gameplay rule. An open WebSocket keeps a
+ * serverless instance alive and billing - so a browser tab left open on
+ * the lobby overnight quietly bills for the whole night at the
+ * always-allocated CPU rate. Nothing in the game needs an idle lobby to
+ * persist, so we hang up on it.
+ */
+const IDLE_LOBBY_SECONDS = 10 * 60;
+
+/**
+ * Backstop for a match where every human has gone silent (all taken over
+ * by bots). Without this, four abandoned tabs would play bot-vs-bot
+ * forever on your bill.
+ */
+const ALL_IDLE_MATCH_SECONDS = 3 * 60;
+
 export class GameRoom {
   /**
    * @param {object} opts
@@ -90,6 +109,11 @@ export class GameRoom {
     this.clock = 0;
     /** slot -> room-clock time of that seat's last input. */
     this.lastInputAt = new Map();
+    /** Set when the room decides it should be torn down; the transport
+     * adapter polls this and closes the sockets. */
+    this.expired = false;
+    this.expiryReason = null;
+    this.idleSeconds = 0;
   }
 
   get playerCount() {
@@ -164,6 +188,10 @@ export class GameRoom {
   handleMessage(connId, msg) {
     const conn = this.connections.get(connId);
     if (!conn) return;
+    // Any real message counts as activity. Pings alone deliberately do
+    // NOT reset the lobby idle timer (see below) - a forgotten tab keeps
+    // pinging happily.
+    if (msg.t !== 'ping') this.idleSeconds = 0;
 
     switch (msg.t) {
       case 'input':
@@ -355,6 +383,8 @@ export class GameRoom {
    */
   tick(dt) {
     this.clock += dt;
+    this.updateIdleShutdown(dt);
+    if (this.expired) return;
 
     if (this.phase === 'finished') {
       // Hold on the champion screen, then hand the room back to the lobby.
@@ -396,6 +426,45 @@ export class GameRoom {
     if (this.snapshotAccumulator >= interval) {
       this.snapshotAccumulator %= interval;
       this.broadcastSnapshot();
+    }
+  }
+
+  /**
+   * Decides whether this room is wasting money and should be closed.
+   * Two cases: an abandoned lobby, and a match where every human has gone
+   * quiet. Both are cost controls - see the constants at the top.
+   */
+  updateIdleShutdown(dt) {
+    if (this.expired) return;
+
+    if (this.phase === 'lobby') {
+      const anyoneReady = [...this.connections.values()].some((c) => c.ready);
+      // An empty or unready lobby ages; any activity resets it.
+      if (!anyoneReady) {
+        this.idleSeconds += dt;
+        if (this.idleSeconds > IDLE_LOBBY_SECONDS) {
+          this.expired = true;
+          this.expiryReason = 'idle_lobby';
+        }
+      } else {
+        this.idleSeconds = 0;
+      }
+      return;
+    }
+
+    if (this.phase === 'playing') {
+      // Every human taken over by a bot means nobody is actually here.
+      const humans = [...this.connections.values()];
+      const allTakenOver = humans.length > 0 && humans.every((c) => c.takenOver);
+      if (allTakenOver) {
+        this.idleSeconds += dt;
+        if (this.idleSeconds > ALL_IDLE_MATCH_SECONDS) {
+          this.expired = true;
+          this.expiryReason = 'all_players_idle';
+        }
+      } else {
+        this.idleSeconds = 0;
+      }
     }
   }
 

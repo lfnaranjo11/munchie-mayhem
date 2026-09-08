@@ -500,6 +500,67 @@ Then set `SERVER_URL` in `config/network.config.js` to
 You can also point a local client at the deployed server without redeploying:
 `http://localhost:5173/?server=wss://your-service.run.app`
 
+#### Not burning money
+
+**The single biggest cost lever is `--min-instances`.** With
+`--min-instances=1` you pay 24/7 whether anyone plays or not. With `0`
+you pay only while someone is connected, at the cost of a few seconds of
+cold start on the first join of the day. For a game in testing, `0` is
+almost always the right call.
+
+Note the interaction: `--no-cpu-throttling` (which the game loop needs)
+means you're billed for the instance's whole lifetime, not just request
+processing. Combined with `--min-instances=1`, that's the expensive
+configuration — roughly $10–50/month idle depending on sizing. Combined
+with `--min-instances=0`, it costs nothing when nobody is playing.
+
+**An open WebSocket keeps an instance alive.** A browser tab left open on
+the lobby overnight will hold a connection and bill for the whole night.
+The server now closes rooms that aren't really being used:
+
+| Situation | Timeout | Constant |
+|---|---|---|
+| Lobby with nobody ready | 10 min | `IDLE_LOBBY_SECONDS` |
+| Match where every human has been bot-taken-over | 3 min | `ALL_IDLE_MATCH_SECONDS` |
+
+Pings deliberately don't reset the lobby timer — a forgotten tab pings
+happily forever, so only real activity counts.
+
+**Audit what you actually deployed:**
+
+```bash
+SVC=backend-server-munchie-mayhem
+REGION=us-east4
+
+# The four settings that drive cost
+gcloud run services describe $SVC --region $REGION --format="yaml(
+  spec.template.metadata.annotations,
+  spec.template.spec.containers[0].resources,
+  spec.template.spec.timeoutSeconds)"
+
+# Anything else running that you forgot about?
+gcloud run services list --format="table(metadata.name, region,
+  spec.template.metadata.annotations['autoscaling.knative.dev/minScale'])"
+```
+
+In the output check:
+- `autoscaling.knative.dev/minScale` → `0` unless you need instant joins
+- `autoscaling.knative.dev/maxScale` → `1` (correctness, not just cost — rooms live in memory)
+- `run.googleapis.com/cpu-throttling` → `false` (the game loop needs it)
+- `timeoutSeconds` → `3600` (or matches drop at 5 min)
+- `resources.limits` → 1 vCPU / 512Mi is plenty; more is wasted money
+
+Adjust without redeploying:
+```bash
+gcloud run services update $SVC --region $REGION \
+  --min-instances=0 --max-instances=1 --no-cpu-throttling --timeout=3600
+```
+
+**Set a budget alert regardless.** It's the only thing that catches the
+mistake you didn't think of:
+Billing → Budgets & alerts → set a small monthly budget with email at
+50/90/100%. Costs nothing and caps the blast radius.
+
 #### If you'd rather use a normal cloud provider
 
 `server/node-server.mjs` is an ordinary Node WebSocket server — it runs

@@ -109,6 +109,17 @@ export class GameRoomDO {
       this.lastTick = now;
       try {
         this.room?.tick(dt);
+        if (this.room?.expired) {
+          for (const ws of this.sockets.values()) {
+            try {
+              ws.send(encode({ t: S2C.ERROR, code: 'room_idle', reason: this.room.expiryReason }));
+              ws.close();
+            } catch {
+              /* already closing */
+            }
+          }
+          this.sockets.clear();
+        }
       } catch (err) {
         console.error('tick failed', err);
       }

@@ -54,6 +54,22 @@ function createRoom(code) {
     last = now;
     try {
       room.tick(dt);
+      // Cost control: close rooms nobody is actually using. An open
+      // WebSocket keeps a serverless instance alive and billing, so an
+      // abandoned tab is a slow money leak.
+      if (room.expired) {
+        console.log(`[room ${code}] closing (${room.expiryReason})`);
+        for (const ws of sockets.values()) {
+          try {
+            ws.send(encode({ t: S2C.ERROR, code: 'room_idle', reason: room.expiryReason }));
+            ws.close();
+          } catch {
+            /* already closing */
+          }
+        }
+        sockets.clear();
+        disposeRoom(code);
+      }
     } catch (err) {
       console.error(`[room ${code}] tick failed:`, err);
     }
