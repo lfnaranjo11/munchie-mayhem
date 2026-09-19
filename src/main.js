@@ -211,7 +211,7 @@ class App {
     this.renderer.draw(drawables);
     this.renderer.draw(this.particles.getDrawables());
     // Drawn last so the boundary sits on top of anything near the edge.
-    this.renderer.drawArenaFrame(mg.arena);
+    this.renderer.drawArenaFrame(arena);
     ctx.restore();
 
     if (this.touch) this.joystick.update(this.touch.getVisualState());
