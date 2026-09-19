@@ -119,7 +119,27 @@ const httpServer = createServer((req, res) => {
   res.end('not found');
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({
+  server: httpServer,
+  /**
+   * permessage-deflate: compresses every frame. Our snapshots are
+   * repetitive JSON, which deflates extremely well (~70%+), and on a
+   * metered host EGRESS IS A REAL BILL - a 4-player match streams
+   * ~0.5 GB/hour uncompressed. Browsers negotiate this automatically, so
+   * it costs the client nothing.
+   *
+   * The tuning below is deliberately conservative: ws's docs warn that
+   * the default zlib settings can be memory-hungry per connection, so we
+   * cap the window/memory and skip compressing tiny frames where the
+   * overhead isn't worth it.
+   */
+  perMessageDeflate: {
+    zlibDeflateOptions: { level: 6, memLevel: 7, windowBits: 13 },
+    clientNoContextTakeover: true,
+    serverNoContextTakeover: true,
+    threshold: 256,
+  },
+});
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Munchie Mayhem server listening on ${HOST}:${PORT}`);

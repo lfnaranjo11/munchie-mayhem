@@ -56,6 +56,35 @@ export class CanvasRenderer {
     this.height = height;
   }
 
+  /**
+   * Draws the playable rectangle.
+   *
+   * Without this the arena's edge was invisible: the canvas background
+   * and the play area were the same colour, so you only discovered the
+   * boundary by walking into it. That matters most where the arena is
+   * letterboxed (tall phones), because the unused bands look identical to
+   * playable space.
+   */
+  drawArenaFrame(arena) {
+    const { ctx } = this;
+    ctx.save();
+    // Soft inner edge, so the boundary reads without a harsh border.
+    ctx.strokeStyle = 'rgba(120, 85, 55, 0.18)';
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(5, 5, arena.width - 10, arena.height - 10, 14);
+    else ctx.rect(5, 5, arena.width - 10, arena.height - 10);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(90, 60, 40, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(2, 2, arena.width - 4, arena.height - 4, 14);
+    else ctx.rect(2, 2, arena.width - 4, arena.height - 4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   clear(bg) {
     this.ctx.fillStyle = bg;
     this.ctx.fillRect(0, 0, this.width, this.height);
@@ -237,20 +266,64 @@ export class CanvasRenderer {
   }
 
   // ---- King of the Meal ------------------------------------------------
+  /** Where a hovering crown is going to land. This marker is the whole
+   * reason the race is fair: every player gets the same information at
+   * the same moment, instead of chasing something unpredictable. */
+  draw_crownTarget(d) {
+    const { ctx } = this;
+    const t = performance.now() / 1000;
+    // Ring closes in as the crown approaches, so "how long until I can
+    // grab it" is readable at a glance.
+    const closing = 1 - (d.progress ?? 0);
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = '#ffd23f';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([6, 6]);
+    ctx.lineDashOffset = -t * 18;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r * (1.4 + closing * 2.6), 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.28 + Math.sin(t * 6) * 0.12;
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r * 1.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   draw_crown(d) {
     const { ctx } = this;
-    // A floating crown bobs and leans into its drift heading, so its
-    // motion reads as a feather being carried rather than a sliding icon.
+    const altitude = d.altitude ?? 0;
+
+    if (d.hovering) {
+      // Ground shadow stays at the real position while the crown is drawn
+      // lifted - that's what sells "in the air, not reachable".
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      const shrink = 1 - altitude / 90;
+      ctx.ellipse(d.x, d.y, d.r * 0.8 * shrink, d.r * 0.3 * shrink, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Everything below is drawn at the lifted position.
+    ctx.translate(0, -altitude);
+
     if (d.floating) {
       const t = performance.now() / 1000;
       ctx.translate(d.x, d.y);
-      ctx.rotate(Math.sin(t * 2.2) * 0.22 + (d.dirX ?? 0) * 0.18);
+      ctx.rotate(Math.sin(t * 2.2) * 0.22);
       ctx.translate(-d.x, -d.y + Math.sin(t * 3.1) * 2.5);
-      // Sparkle halo so it stays visible while drifting over clutter.
-      ctx.globalAlpha = 0.35 + Math.sin(t * 4) * 0.12;
+      // Halo so it stays visible over clutter; brighter in flight.
+      ctx.globalAlpha = (d.hovering ? 0.5 : 0.35) + Math.sin(t * 4) * 0.12;
       ctx.fillStyle = '#fff3b0';
       ctx.beginPath();
-      ctx.arc(d.x, d.y, d.r * 1.9, 0, Math.PI * 2);
+      ctx.arc(d.x, d.y, d.r * (d.hovering ? 2.3 : 1.9), 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
     }

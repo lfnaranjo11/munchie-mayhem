@@ -109,6 +109,43 @@ export function normalizeRoomCode(input) {
     .join('');
 }
 
+/** Display names are the player's own, not an identifier - so the rules
+ * are deliberately permissive. Accents, spaces, emoji and non-Latin
+ * scripts are all fine; the only limits are the two that actually
+ * matter. */
+export const MAX_NAME_LENGTH = 20;
+
+/**
+ * Cleans a display name and explains any change.
+ *
+ * Only two things are enforced, and both have a real reason:
+ *   - length, so a name still fits above a character on a phone screen
+ *   - invisible characters (control codes, zero-width, bidi overrides),
+ *     which can be used to spoof or break the layout of everyone else's
+ *     lobby list
+ * Everything else the player typed is kept as-is. Room CODES are
+ * restricted (they get read aloud and mistyped); names are not, and
+ * conflating the two was a mistake.
+ *
+ * @returns {{name: string, note: string|null}} note explains any change
+ */
+export function sanitizeName(raw) {
+  const original = String(raw ?? '');
+  // Strip control chars, zero-width joiners/spaces and bidi overrides.
+  let name = original.replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, '');
+  name = name.replace(/\s+/g, ' ').trim();
+
+  let note = null;
+  if (name !== original.replace(/\s+/g, ' ').trim()) {
+    note = 'Invisible characters were removed.';
+  }
+  if (name.length > MAX_NAME_LENGTH) {
+    name = name.slice(0, MAX_NAME_LENGTH).trim();
+    note = `Names are capped at ${MAX_NAME_LENGTH} characters so they fit on screen.`;
+  }
+  return { name, note };
+}
+
 /** Clamps an input vector to a unit disc. Applied server-side on every
  * received input: never trust a client not to send {x: 9999}. */
 export function sanitizeInput(raw) {

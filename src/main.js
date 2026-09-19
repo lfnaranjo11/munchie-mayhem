@@ -34,7 +34,7 @@ import { resolveServerURL } from '../config/network.config.js';
  * copy or a cached module graph otherwise looks identical to a bug, which
  * has cost real debugging time on this project already.
  */
-const BUILD = 'v0.7.0 - online UX: status, takeover, self marker, rematch';
+const BUILD = 'v0.8.0 - arena frame, UFO crown, free names, lobby countdown';
 
 class App {
   constructor() {
@@ -210,6 +210,8 @@ class App {
     this.particles.update(renderDt);
     this.renderer.draw(drawables);
     this.renderer.draw(this.particles.getDrawables());
+    // Drawn last so the boundary sits on top of anything near the edge.
+    this.renderer.drawArenaFrame(mg.arena);
     ctx.restore();
 
     if (this.touch) this.joystick.update(this.touch.getVisualState());
@@ -417,7 +419,10 @@ class App {
     this.net = new NetworkClient({
       url,
       onLobby: (msg) => {
-        this.onlineMenu.updateLobby(msg.players);
+        this.onlineMenu.updateLobby(msg.players, {
+          startsIn: msg.startsIn,
+          waitingForPlayers: msg.waitingForPlayers,
+        });
         // The server sends the room back to 'lobby' after a match ends,
         // so a finished game returns everyone to the waiting room for a
         // rematch instead of stranding them on the win screen.
@@ -511,9 +516,12 @@ class App {
     });
 
     try {
-      const { roomCode: joined } = await this.net.connect({ roomCode, quick, name });
+      const welcome = await this.net.connect({ roomCode, quick, name });
       this.showNetStatus(null);
-      this.onlineMenu.showLobby(joined, [], () => this.net.sendReady());
+      this.onlineMenu.showLobby(welcome.roomCode, [], () => this.net.sendReady());
+      // If the server adjusted the name, explain why instead of silently
+      // showing something different from what they typed.
+      if (welcome.nameNote) this.onlineMenu.showNameNote(welcome.nameNote);
     } catch (err) {
       this.showNetStatus(null);
       this.onlineMenu.setStatus(this.explainConnectionFailure(url, err));

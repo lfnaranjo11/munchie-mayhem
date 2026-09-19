@@ -286,17 +286,41 @@ function testCrownEject() {
   mg.updateHeldCrown(1 / 60);
 
   assert.strictEqual(mg.crown.holderId, null, 'crown must not transfer straight to the toucher');
-  assert.strictEqual(mg.crown.dropped, true, 'crown should be loose on the ground after a steal');
+  assert.strictEqual(mg.crown.state, 'hover', 'crown should launch into its hover flight after a steal');
 
-  const dist = Math.hypot(mg.crown.x - lossX, mg.crown.y - lossY);
+  // The landing spot - not the current position - is what must be far
+  // away: the crown starts its flight where it was lost.
   const minSide = Math.min(arena.width, arena.height);
-  assert.ok(dist > minSide * 0.1, `crown should land well away from the loss point (landed ${Math.round(dist)}px away)`);
+  const throwDist = Math.hypot(mg.crown.targetX - lossX, mg.crown.targetY - lossY);
+  assert.ok(
+    throwDist >= minSide * 0.4,
+    `crown should be thrown well away from the loss point (target ${Math.round(throwDist)}px away)`
+  );
+
+  // UNTOUCHABLE in flight: park a player exactly on it and it must not be
+  // picked up. This is what stops a fast-moving pickup being un-grabbable
+  // online, and stops bots winning every scramble.
+  let steps = 0;
+  while (mg.crown.state === 'hover' && steps < 600) {
+    players[1].x = mg.crown.x;
+    players[1].y = mg.crown.y;
+    mg.updateDroppedCrown(1 / 60);
+    assert.strictEqual(mg.crown.holderId, null, 'a hovering crown must not be grabbable');
+    steps++;
+  }
+  assert.strictEqual(mg.crown.state, 'landed', 'crown should eventually land');
   assert.ok(
     mg.crown.x >= 0 && mg.crown.x <= arena.width && mg.crown.y >= 0 && mg.crown.y <= arena.height,
     'crown must land inside the arena'
   );
 
-  console.log(`✓ crown ejects to a random spot on steal (${Math.round(dist)}px away), not to the toucher`);
+  // Landed and stationary, so it can actually be caught.
+  const restX = mg.crown.x;
+  mg.transferCooldown = 0;
+  mg.updateDroppedCrown(1 / 60);
+  assert.strictEqual(mg.crown.x, restX, 'a landed crown must not drift - that is what makes it catchable online');
+
+  console.log(`✓ crown flies untouchable then lands ${Math.round(throwDist)}px away and sits still`);
 }
 
 /**
@@ -384,13 +408,17 @@ function testCrownNeverStuck() {
     height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
   };
 
-  let checkedFrames = 0;
+  let landings = 0;
   let worstOverlap = 0;
-  const headings = new Set();
-  let movedDistance = 0;
+  let shortestThrow = Infinity;
+  const spots = new Set();
+  const minSide = Math.min(arena.width, arena.height);
 
-  // Several seeds, because a stuck crown depends on where obstacles and
-  // eject angles happen to land.
+  // Drive ejections directly rather than hoping a random walk produces
+  // them: an earlier version of this test relied on players bumping into
+  // each other, and with per-frame random input they just jitter on the
+  // spot, so the crown was never actually thrown and the test proved
+  // nothing.
   for (const seed of [1, 7, 13, 42, 99]) {
     const players = [0, 1, 2, 3].map((i) =>
       createPlayer({ x: 120 + i * 130, y: 140 + i * 70, name: `P${i}` })
@@ -405,41 +433,56 @@ function testCrownNeverStuck() {
     });
     mg.start();
 
-    let prev = { x: mg.crown.x, y: mg.crown.y };
-    for (let f = 0; f < 3600; f++) {
-      const inputs = {};
-      for (const p of players) inputs[p.id] = { x: Math.random() * 2 - 1, y: Math.random() * 2 - 1 };
-      mg.step(1 / 60, inputs);
+    for (let throwNo = 0; throwNo < 25; throwNo++) {
+      const from = {
+        x: 60 + ((throwNo * 137) % (arena.width - 120)),
+        y: 60 + ((throwNo * 91) % (arena.height - 120)),
+      };
+      mg.ejectCrown(from);
+      shortestThrow = Math.min(
+        shortestThrow,
+        Math.hypot(mg.crown.targetX - from.x, mg.crown.targetY - from.y)
+      );
 
-      if (mg.crown.dropped) {
-        for (const obs of mg.obstacles) {
-          const d = Math.hypot(mg.crown.x - obs.x, mg.crown.y - obs.y);
-          const minDist = obs.radius + mg.crown.radius;
-          if (d < minDist) worstOverlap = Math.max(worstOverlap, minDist - d);
-        }
-        movedDistance += Math.hypot(mg.crown.x - prev.x, mg.crown.y - prev.y);
-        headings.add(Math.round(Math.atan2(mg.crown.dirY, mg.crown.dirX) * 8));
-        checkedFrames++;
-      }
-      prev = { x: mg.crown.x, y: mg.crown.y };
+      // Fly it to the ground.
+      let guard = 0;
+      while (mg.crown.state === 'hover' && guard++ < 1000) mg.updateDroppedCrown(1 / 60);
+      assert.strictEqual(mg.crown.state, 'landed', `seed ${seed}: crown should land`);
 
-      // Crown must always stay inside the arena.
+      // A landed crown must be reachable: inside the arena and clear of
+      // every obstacle, or players simply cannot get to it.
       assert.ok(
         mg.crown.x >= 0 && mg.crown.x <= arena.width && mg.crown.y >= 0 && mg.crown.y <= arena.height,
-        `seed ${seed}: crown left the arena at (${mg.crown.x.toFixed(1)}, ${mg.crown.y.toFixed(1)})`
+        `seed ${seed}: crown landed outside the arena at (${mg.crown.x.toFixed(1)}, ${mg.crown.y.toFixed(1)})`
       );
-      if (mg.isFinished()) break;
+      for (const obs of mg.obstacles) {
+        const d = Math.hypot(mg.crown.x - obs.x, mg.crown.y - obs.y);
+        const minDist = obs.radius + mg.crown.radius;
+        if (d < minDist) worstOverlap = Math.max(worstOverlap, minDist - d);
+      }
+
+      spots.add(`${Math.round(mg.crown.x / 60)},${Math.round(mg.crown.y / 60)}`);
+      landings++;
     }
   }
 
-  assert.ok(checkedFrames > 200, `expected plenty of loose-crown frames to check, got ${checkedFrames}`);
-  assert.strictEqual(worstOverlap, 0, `crown must never overlap an obstacle (worst overlap ${worstOverlap.toFixed(2)}px)`);
-  assert.ok(movedDistance > 500, 'a loose crown should actually drift, not sit still');
-  assert.ok(headings.size > 5, `crown should change direction over time (distinct headings: ${headings.size})`);
+  assert.strictEqual(worstOverlap, 0, `a landed crown must never overlap an obstacle (worst ${worstOverlap.toFixed(2)}px)`);
+  assert.ok(
+    shortestThrow >= minSide * config.landMinDistance * 0.95,
+    `every throw should clear the minimum distance (shortest ${Math.round(shortestThrow)}px)`
+  );
+  // Varied landings, or every scramble happens in the same corner.
+  assert.ok(spots.size > 20, `landings should be spread around the arena (distinct spots: ${spots.size})`);
 
-  console.log(`\u2713 crown never sticks in an obstacle and drifts with direction changes (${checkedFrames} loose frames, ${headings.size} headings)`);
+  console.log(`✓ ${landings} crown landings: all reachable, min throw ${Math.round(shortestThrow)}px, ${spots.size} distinct spots`);
 }
 
+/**
+ * The animation layer is render-only, but its maths is pure and worth
+ * pinning down - a spring that never settles or a particle pool that
+ * leaks would both show up as a gradually degrading frame rate rather
+ * than an obvious crash.
+ */
 testRNGDeterminism();
 testEachMinigameRunsHeadless();
 testStartedFlagTiming();

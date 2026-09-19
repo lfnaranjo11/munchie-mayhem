@@ -128,7 +128,8 @@ export class NetworkClient {
       case S2C.WELCOME:
         this.slot = msg.slot;
         this.roomCode = msg.roomCode;
-        resolveJoin?.({ slot: msg.slot, roomCode: msg.roomCode });
+        this.name = msg.name;
+        resolveJoin?.({ slot: msg.slot, roomCode: msg.roomCode, name: msg.name, nameNote: msg.nameNote });
         break;
       case S2C.LOBBY:
         this.onLobby?.(msg);

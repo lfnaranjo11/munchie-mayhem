@@ -18,7 +18,7 @@ import assert from 'node:assert';
 import { WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { C2S, S2C, PROTOCOL_VERSION, encode, decode, generateRoomCode } from '../src/network/protocol.js';
+import { C2S, S2C, PROTOCOL_VERSION, encode, decode, generateRoomCode, sanitizeName } from '../src/network/protocol.js';
 
 // A random port and random room codes per run. A fixed port meant a
 // server from a previous run could still hold it, so clients silently
@@ -267,6 +267,25 @@ async function main() {
     clients.forEach((c) => c.close());
     await sleep(300);
 
+    // ---- Names are the player's own, not an identifier --------------------
+    // Accents, spaces and emoji must survive; only invisible characters
+    // and excess length are touched, and the player is told if so.
+    for (const [input, expected] of [
+      ['José María', 'José María'],
+      ['日本のプレイヤー', '日本のプレイヤー'],
+      ['emoji 🎮 ok', 'emoji 🎮 ok'],
+      ['  spaced   out  ', 'spaced out'],
+    ]) {
+      assert.strictEqual(sanitizeName(input).name, expected, `name "${input}" should survive cleaning`);
+    }
+    // Invisible characters are stripped (they can spoof or break layout).
+    assert.strictEqual(sanitizeName('bad\u200Bname').name, 'badname');
+    assert.ok(sanitizeName('bad\u200Bname').note, 'stripping should be explained, not silent');
+    // Over-long names are capped, with a reason.
+    const long = sanitizeName('x'.repeat(50));
+    assert.ok(long.name.length <= 20 && long.note, 'long names capped with an explanation');
+    console.log('✓ names allow accents/emoji/scripts; only length + invisibles enforced, and explained');
+
     // ---- The typed name must reach the actual match -----------------------
     // The name was collected in the lobby, shown in the lobby list, and
     // then silently ignored: TournamentManager labelled everyone
@@ -278,6 +297,25 @@ async function main() {
       `players should carry the names they typed, got ${JSON.stringify(named)}`
     );
     console.log('✓ typed names reach the in-game players');
+
+    // ---- A lone ready player must not start the match instantly -----------
+    // The bug: the first person into a room readies up before anyone else
+    // has arrived, and the match began immediately, one-against-bots.
+    const solo = new TestClient('Solo', { x: 1, y: 0 });
+    await solo.connect({ roomCode: generateRoomCode() });
+    solo.ready();
+    await sleep(900);
+    assert.strictEqual(solo.rounds.length, 0, 'a solo ready player should not start the match immediately');
+    const withCountdown = solo.lobbies.filter((l) => l.startsIn != null);
+    assert.ok(withCountdown.length > 0, 'the lobby should announce a countdown');
+    assert.ok(
+      withCountdown[0].startsIn > 5,
+      `a player waiting alone should get a long window, got ${withCountdown[0].startsIn}s`
+    );
+    assert.strictEqual(withCountdown[0].waitingForPlayers, true, 'lobby should flag that it is still waiting');
+    console.log(`✓ solo player gets a ${withCountdown[0].startsIn}s countdown instead of an instant start`);
+    solo.close();
+    await sleep(200);
 
     // ---- Bots fill a half-empty room --------------------------------------
     // The original bug: botCount was computed against a floor of 2 total

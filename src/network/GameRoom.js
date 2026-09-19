@@ -1,7 +1,7 @@
 import { TournamentManager } from '../tournament/TournamentManager.js';
 import { MINIGAME_REGISTRY } from '../minigames/registry.js';
 import { GLOBAL_DEFAULTS } from '../../config/global.config.js';
-import { S2C, SNAPSHOT_HZ, SIM_HZ, MAX_PLAYERS, sanitizeInput } from './protocol.js';
+import { S2C, SNAPSHOT_HZ, SIM_HZ, MAX_PLAYERS, sanitizeInput, sanitizeName } from './protocol.js';
 
 /**
  * GameRoom.js - one authoritative online match.
@@ -58,6 +58,18 @@ const LAG_TAKEOVER_SECONDS = 3;
 const REMATCH_SECONDS = 8;
 
 /**
+ * Lobby start countdown.
+ *
+ * Starting the instant everyone present is ready was wrong: the first
+ * person in a room readies up before anyone else has arrived, and the
+ * match begins one-against-bots. A visible countdown gives latecomers a
+ * window, and the wait is much shorter once a second human is present -
+ * you only need the long window when you're still alone.
+ */
+const COUNTDOWN_WITH_FRIENDS = 5;
+const COUNTDOWN_ALONE = 25;
+
+/**
  * How long a room may sit in the lobby with nobody ready before the
  * server closes it.
  *
@@ -107,6 +119,9 @@ export class GameRoom {
     /** Monotonic room clock in seconds, advanced by tick(). Used for lag
      * detection - deliberately not wall-clock, so it can't jump. */
     this.clock = 0;
+    /** Seconds until the match starts, or null if not counting down. */
+    this.countdown = null;
+    this._lastBroadcastCountdown = null;
     /** slot -> room-clock time of that seat's last input. */
     this.lastInputAt = new Map();
     /** Set when the room decides it should be torn down; the transport
@@ -141,17 +156,25 @@ export class GameRoom {
     let slot = 0;
     while (used.has(slot)) slot++;
 
-    // Trim and bound the display name; fall back to a seat label. Names
-    // are echoed to every client, so never trust the length.
-    const cleanName = String(name || '').trim().slice(0, 12) || `Player ${slot + 1}`;
+    // Names are permissive (see sanitizeName) - only length and invisible
+    // characters are enforced, and the player is told if anything changed.
+    const cleaned = sanitizeName(name);
+    const cleanName = cleaned.name || `Player ${slot + 1}`;
     this.connections.set(connId, { connId, name: cleanName, slot, ready: false, takenOver: false });
     this.inputs.set(slot, { x: 0, y: 0 });
     this.lastInputAt.set(slot, this.clock);
+    // A new arrival isn't ready yet, so this cancels any countdown and
+    // gives them time - which is the whole point.
+    this.refreshCountdown();
 
     this.send(connId, {
       t: S2C.WELCOME,
       connId,
       slot,
+      name: cleanName,
+      // If we changed what they typed, say so and why rather than
+      // silently substituting something else.
+      nameNote: cleaned.note,
       roomCode: this.code,
       maxPlayers: MAX_PLAYERS,
     });
@@ -182,6 +205,7 @@ export class GameRoom {
         player.inputSlot = null;
       }
     }
+    this.refreshCountdown();
     this.broadcastLobby();
   }
 
@@ -203,9 +227,9 @@ export class GameRoom {
         if (conn.takenOver) this.restoreControl(conn);
         break;
       case 'ready':
-        conn.ready = true;
+        conn.ready = !conn.ready; // tapping again un-readies
+        this.refreshCountdown();
         this.broadcastLobby();
-        if (this.phase === 'lobby' && this.allReady()) this.startTournament();
         break;
       case 'ping':
         // Echo the client's timestamp so it can measure round-trip time
@@ -222,12 +246,34 @@ export class GameRoom {
     return [...this.connections.values()].every((c) => c.ready);
   }
 
+  /**
+   * Starts, extends or cancels the lobby countdown after any change.
+   * Called on ready/unready and whenever someone joins or leaves.
+   */
+  refreshCountdown() {
+    if (this.phase !== 'lobby') return;
+    const conns = [...this.connections.values()];
+    const everyoneReady = conns.length > 0 && conns.every((c) => c.ready);
+
+    if (!everyoneReady) {
+      this.countdown = null;
+      return;
+    }
+    const target = conns.length >= 2 ? COUNTDOWN_WITH_FRIENDS : COUNTDOWN_ALONE;
+    // Never extend a countdown already running - that would let a late
+    // joiner repeatedly push back a start everyone else is waiting on.
+    this.countdown = this.countdown === null ? target : Math.min(this.countdown, target);
+  }
+
   broadcastLobby() {
     this.broadcast({
       t: S2C.LOBBY,
       phase: this.phase,
       players: [...this.connections.values()].map((c) => ({ slot: c.slot, name: c.name, ready: c.ready })),
       maxPlayers: MAX_PLAYERS,
+      // null = not counting down yet (someone still isn't ready).
+      startsIn: this.countdown === null ? null : Math.ceil(this.countdown),
+      waitingForPlayers: this.connections.size < 2,
     });
   }
 
@@ -357,6 +403,8 @@ export class GameRoom {
   resetToLobby() {
     this.phase = 'lobby';
     this.tournament = null;
+    this.countdown = null;
+    this._lastBroadcastCountdown = null;
     for (const conn of this.connections.values()) {
       conn.ready = false;
       conn.takenOver = false;
@@ -390,6 +438,23 @@ export class GameRoom {
       // Hold on the champion screen, then hand the room back to the lobby.
       this.rematchTimer -= dt;
       if (this.rematchTimer <= 0) this.resetToLobby();
+      return;
+    }
+
+    if (this.phase === 'lobby' && this.countdown !== null) {
+      this.countdown -= dt;
+      if (this.countdown <= 0) {
+        this.countdown = null;
+        this.startTournament();
+        return;
+      }
+      // Re-broadcast only when the displayed whole second changes, rather
+      // than 60x a second - the client just needs the number to tick.
+      const shown = Math.ceil(this.countdown);
+      if (shown !== this._lastBroadcastCountdown) {
+        this._lastBroadcastCountdown = shown;
+        this.broadcastLobby();
+      }
       return;
     }
 
@@ -468,6 +533,26 @@ export class GameRoom {
     }
   }
 
+  /**
+   * Rounds positional fields to one decimal place.
+   *
+   * A raw float serializes as "490.5109002426884" - 17 characters to
+   * express a position the client renders at sub-pixel scale and then
+   * interpolates anyway. One decimal is more precision than the display
+   * can show, and cuts roughly a fifth off every snapshot. On a metered
+   * host that fifth is money.
+   */
+  static compactDrawables(drawables) {
+    const round = (v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : v);
+    return drawables.map((d) => {
+      const out = { ...d };
+      for (const key of ['x', 'y', 'x1', 'y1', 'x2', 'y2', 'r']) {
+        if (typeof out[key] === 'number') out[key] = round(out[key]);
+      }
+      return out;
+    });
+  }
+
   broadcastSnapshot() {
     const mg = this.tournament?.currentMinigame;
     if (!mg?.started) return;
@@ -475,7 +560,7 @@ export class GameRoom {
       t: S2C.SNAPSHOT,
       seq: this.seq++,
       // The drawable list IS the world state - see the file header.
-      d: mg.getDrawables(),
+      d: GameRoom.compactDrawables(mg.getDrawables()),
       bg: mg.backgroundColor,
       time: Math.round(mg.getTimeRemaining?.() ?? 0),
       scores: this.tournament.players.map((p) => ({ id: p.id, score: p.score, alive: p.alive })),

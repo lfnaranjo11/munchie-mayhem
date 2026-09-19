@@ -25,18 +25,19 @@ export class KingOfTheMeal extends MinigameBase {
 
     // "The crown starts random at the map and people will go after it" -
     // it begins on the ground, not on a player.
-    const driftAngle = this.rng.range(0, Math.PI * 2);
     this.crown = {
       holderId: null,
       dropped: true,
+      // Starts already landed so the opening race is immediate.
+      state: 'landed',
       x: this.rng.range(100, this.arena.width - 100),
       y: this.rng.range(100, this.arena.height - 100),
       radius: 16,
-      // Drift state - see updateDroppedCrown for what each does.
-      dirX: Math.cos(driftAngle),
-      dirY: Math.sin(driftAngle),
-      driftTimer: this.rng.range(this.config.driftChangeMin, this.config.driftChangeMax),
-      swayPhase: this.rng.range(0, Math.PI * 2),
+      altitude: 0,
+      hoverProgress: 1,
+      hoverDuration: 1,
+      targetX: 0,
+      targetY: 0,
     };
     // The initial spot is random, so it can land inside an obstacle just
     // like an ejected one can - settle it clear before play starts.
@@ -202,147 +203,153 @@ export class KingOfTheMeal extends MinigameBase {
         const ny = dy / dist;
         this.crown.x = obs.x + nx * minDist;
         this.crown.y = obs.y + ny * minDist;
-        // Deflect the drift heading off the obstacle so it doesn't
-        // immediately drift straight back in.
-        const dot = this.crown.dirX * nx + this.crown.dirY * ny;
-        if (dot < 0) {
-          this.crown.dirX -= 2 * dot * nx;
-          this.crown.dirY -= 2 * dot * ny;
-        }
+        // (The old drift-heading deflection lived here. A landed crown
+        // doesn't move, so there's no heading left to deflect.)
       }
     }
-  }
-
-  ejectCrown(fromPos, forceScale = 1) {
-    const { rng, arena, config } = this;
-    const minSide = Math.min(arena.width, arena.height);
-    const distance = minSide * rng.range(config.ejectDistanceMin, config.ejectDistanceMax) * forceScale;
-
-    let x = fromPos.x;
-    let y = fromPos.y;
-    const margin = this.crown.radius + 12;
-    let found = false;
-
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const angle = rng.range(0, Math.PI * 2);
-      const candidateX = fromPos.x + Math.cos(angle) * distance;
-      const candidateY = fromPos.y + Math.sin(angle) * distance;
-      const inBounds =
-        candidateX > margin &&
-        candidateX < arena.width - margin &&
-        candidateY > margin &&
-        candidateY < arena.height - margin;
-      // Must be in bounds AND clear of obstacles - the second check is
-      // what stops the crown landing somewhere unreachable.
-      if (inBounds && !this._isBlocked(candidateX, candidateY)) {
-        x = candidateX;
-        y = candidateY;
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      // Fall back to a scan for any clear spot rather than dropping it
-      // somewhere blocked. Deterministic order, so this stays reproducible.
-      outer: for (let ring = 1; ring <= 6; ring++) {
-        for (let i = 0; i < 12; i++) {
-          const a = (i / 12) * Math.PI * 2;
-          const r = distance * (ring / 6);
-          const cx = Math.max(margin, Math.min(arena.width - margin, fromPos.x + Math.cos(a) * r));
-          const cy = Math.max(margin, Math.min(arena.height - margin, fromPos.y + Math.sin(a) * r));
-          if (!this._isBlocked(cx, cy)) {
-            x = cx;
-            y = cy;
-            break outer;
-          }
-        }
-      }
-    }
-
-    this.crown.dropped = true;
-    this.crown.holderId = null;
-    this.crown.x = x;
-    this.crown.y = y;
-    // Start drifting in a random heading (see updateDroppedCrown).
-    const driftAngle = rng.range(0, Math.PI * 2);
-    this.crown.dirX = Math.cos(driftAngle);
-    this.crown.dirY = Math.sin(driftAngle);
-    this.crown.driftTimer = rng.range(config.driftChangeMin, config.driftChangeMax);
-    this.crown.swayPhase = rng.range(0, Math.PI * 2);
-    this._settleCrown();
-    this.transferCooldown = this.config.transferCooldown;
   }
 
   /**
-   * The floating, feather-like drift of a loose crown.
+   * Sends the crown up and away like a UFO, to land somewhere distant.
    *
-   * Design intent: the crown should be chaseable but never quite
-   * predictable. It floats slowly along a heading with a sideways sway
-   * (the "feather" part - a perpendicular sinusoid, so its path is a lazy
-   * S rather than a straight line), and at random intervals it abruptly
-   * picks a new heading. That sudden change is what stops players simply
-   * running a straight intercept line: you have to keep adjusting.
+   * ── WHY THIS REPLACED THE CONSTANT FAST DRIFT ────────────────────────
+   * The old loose crown drifted continuously at speed, right next to
+   * whoever lost it. Three things went wrong with that:
+   *   1. It was usually reachable immediately, so whoever happened to be
+   *      adjacent often got it straight back - no real scramble.
+   *   2. Bots dominated. A constantly-moving target rewards frame-perfect
+   *      re-aiming, which a bot does every tick and a human cannot.
+   *   3. Online it was uncatchable. A fast-moving pickup is the worst
+   *      case for interpolation: you see it ~70ms behind where the server
+   *      thinks it is, so you grab at empty space.
    *
-   * This lives in game logic rather than the render layer because it
-   * changes the crown's actual position - it's gameplay, not decoration -
-   * so it uses the seeded RNG and the fixed timestep, keeping the round
-   * fully reproducible.
+   * The UFO model fixes all three. While HOVERING the crown is
+   * untouchable, so there is nothing to mis-grab. It telegraphs its
+   * landing spot the whole way (see the crownTarget drawable), so
+   * everyone gets the same information at the same time and the race is
+   * fair. Once LANDED it sits perfectly still, which makes it catchable
+   * even with network interpolation - a stationary target has no lag
+   * error.
+   */
+  ejectCrown(fromPos, forceScale = 1) {
+    const target = this.pickLandingSpot(fromPos, forceScale);
+
+    this.crown.state = 'hover';
+    this.crown.dropped = true;
+    this.crown.holderId = null;
+    this.crown.fromX = fromPos.x;
+    this.crown.fromY = fromPos.y;
+    this.crown.targetX = target.x;
+    this.crown.targetY = target.y;
+    this.crown.x = fromPos.x;
+    this.crown.y = fromPos.y;
+    this.crown.hoverProgress = 0;
+
+    const dist = Math.hypot(target.x - fromPos.x, target.y - fromPos.y);
+    // Constant speed rather than constant duration, so a long throw takes
+    // longer - it reads as actual travel rather than a teleport.
+    this.crown.hoverDuration = Math.max(this.config.hoverMinDuration, dist / this.config.hoverSpeed);
+    this.transferCooldown = 0;
+  }
+
+  /**
+   * Chooses where the crown lands: far from whoever lost it, and as fair
+   * as possible for everyone else.
+   *
+   * Scores candidate points by distance to the NEAREST player and takes
+   * the best - so it lands in open space rather than in somebody's lap,
+   * and the scramble starts from roughly equal footing. Candidates inside
+   * obstacles are rejected outright (the old "crown stuck in an obstacle"
+   * bug).
+   */
+  pickLandingSpot(fromPos, forceScale = 1) {
+    const { rng, arena, config } = this;
+    const minSide = Math.min(arena.width, arena.height);
+    const minDist = minSide * config.landMinDistance * forceScale;
+    const margin = this.crown.radius + 24;
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < config.landCandidates; i++) {
+      const x = rng.range(margin, arena.width - margin);
+      const y = rng.range(margin, arena.height - margin);
+      if (this._isBlocked(x, y)) continue;
+      if (Math.hypot(x - fromPos.x, y - fromPos.y) < minDist) continue;
+
+      let nearest = Infinity;
+      for (const p of this.getAlivePlayers()) {
+        nearest = Math.min(nearest, Math.hypot(x - p.x, y - p.y));
+      }
+      // Open space scores highest; a small random nudge stops repeated
+      // ejects converging on the same "optimal" corner every time.
+      const score = nearest + rng.range(0, 40);
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x, y };
+      }
+    }
+
+    if (!best) {
+      // Nothing qualified (crowded or tiny arena): settle at the centre.
+      const saved = { x: this.crown.x, y: this.crown.y };
+      this.crown.x = arena.width / 2;
+      this.crown.y = arena.height / 2;
+      this._settleCrown();
+      best = { x: this.crown.x, y: this.crown.y };
+      this.crown.x = saved.x;
+      this.crown.y = saved.y;
+    }
+    return best;
+  }
+
+  /**
+   * Advances a loose crown. Two states:
+   *   hover  - in transit, UNTOUCHABLE, telegraphing its landing spot
+   *   landed - sitting still, grabbable
+   * See ejectCrown for why it works this way.
    */
   updateDroppedCrown(dt) {
-    const { config } = this;
     const crown = this.crown;
 
-    // Sudden direction change on a timer.
-    crown.driftTimer -= dt;
-    if (crown.driftTimer <= 0) {
-      // Turn by a large random angle rather than picking a heading from
-      // scratch, so the change reads as a sharp veer rather than a
-      // teleport of intent.
-      const turn = this.rng.range(config.driftTurnMin, config.driftTurnMax) * (this.rng.chance(0.5) ? 1 : -1);
-      const current = Math.atan2(crown.dirY, crown.dirX);
-      crown.dirX = Math.cos(current + turn);
-      crown.dirY = Math.sin(current + turn);
-      crown.driftTimer = this.rng.range(config.driftChangeMin, config.driftChangeMax);
+    if (crown.state === 'hover') {
+      crown.hoverProgress = Math.min(1, crown.hoverProgress + dt / crown.hoverDuration);
+      const t = crown.hoverProgress;
+      // Ease out so it decelerates into the landing spot instead of
+      // stopping dead - and that deceleration is the visual warning that
+      // it is about to become grabbable.
+      const eased = 1 - Math.pow(1 - t, 2);
+      crown.x = crown.fromX + (crown.targetX - crown.fromX) * eased;
+      crown.y = crown.fromY + (crown.targetY - crown.fromY) * eased;
+
+      const dx = crown.targetX - crown.fromX;
+      const dy = crown.targetY - crown.fromY;
+      const len = Math.hypot(dx, dy) || 1;
+      const wobble = Math.sin(t * Math.PI * 4) * this.config.hoverWobble * (1 - t);
+      crown.x += (-dy / len) * wobble;
+      crown.y += (dx / len) * wobble;
+      // Altitude is purely for the renderer (height + ground shadow).
+      crown.altitude = Math.sin(t * Math.PI) * this.config.hoverAltitude;
+
+      if (t >= 1) {
+        crown.state = 'landed';
+        crown.altitude = 0;
+        crown.x = crown.targetX;
+        crown.y = crown.targetY;
+        this._settleCrown();
+      }
+      // Untouchable in transit - deliberately no pickup check here.
+      return;
     }
 
-    // Feather sway: a perpendicular oscillation layered on the heading.
-    crown.swayPhase += dt * config.driftSwaySpeed;
-    const sway = Math.sin(crown.swayPhase) * config.driftSwayAmount;
-    const perpX = -crown.dirY;
-    const perpY = crown.dirX;
-
-    // Drift speeds up as the round heats up, like everything else.
-    const speed = config.driftSpeed * this.chaos.intensity;
-    crown.x += (crown.dirX + perpX * sway) * speed * dt;
-    crown.y += (crown.dirY + perpY * sway) * speed * dt;
-
-    // Bounce off the arena edges so it never pins itself in a corner.
-    const margin = crown.radius + 6;
-    if (crown.x < margin) {
-      crown.x = margin;
-      crown.dirX = Math.abs(crown.dirX);
-    } else if (crown.x > this.arena.width - margin) {
-      crown.x = this.arena.width - margin;
-      crown.dirX = -Math.abs(crown.dirX);
-    }
-    if (crown.y < margin) {
-      crown.y = margin;
-      crown.dirY = Math.abs(crown.dirY);
-    } else if (crown.y > this.arena.height - margin) {
-      crown.y = this.arena.height - margin;
-      crown.dirY = -Math.abs(crown.dirY);
-    }
-
-    // Never let it come to rest inside an obstacle or outside the arena
-    // (see _settleCrown - a naive single push can do both).
-    this._settleCrown();
-
+    // Landed: perfectly still, so it is catchable even through network
+    // interpolation. Only now can anyone pick it up.
     if (this.transferCooldown > 0) return;
     for (const p of this.getAlivePlayers()) {
       const d = Math.hypot(p.x - this.crown.x, p.y - this.crown.y);
       if (d < p.radius + this.crown.radius) {
         this.crown.dropped = false;
+        this.crown.state = 'held';
         this.crown.holderId = p.id;
         this.transferCooldown = this.config.transferCooldown;
         break;
@@ -364,7 +371,12 @@ export class KingOfTheMeal extends MinigameBase {
       }
       return nearest ? { flee: nearest } : null;
     }
-    if (this.crown.dropped) return { seek: this.crown };
+    if (this.crown.dropped) {
+      // In transit the crown can't be grabbed, so head for where it will
+      // land - exactly the information the on-screen marker gives humans.
+      if (this.crown.state === 'hover') return { seek: { x: this.crown.targetX, y: this.crown.targetY } };
+      return { seek: this.crown };
+    }
     const holder = this.players.find((p) => p.id === this.crown.holderId);
     return holder ? { seek: holder } : null;
   }
@@ -397,7 +409,28 @@ export class KingOfTheMeal extends MinigameBase {
         timerFrac: this.crown.holderId === p.id ? Math.min(1, (p.roundState.heldTime ?? 0) / this.config.targetHeldTime) : null,
       });
     }
-    list.push({ id: 'crown', type: 'crown', x: this.crown.x, y: this.crown.y, r: this.crown.radius, floating: this.crown.dropped, dirX: this.crown.dirX, dirY: this.crown.dirY });
+    // While hovering, show the landing spot so everyone can commit to the
+    // race with the same information at the same time.
+    if (this.crown.state === 'hover') {
+      list.push({
+        id: 'crownTarget',
+        type: 'crownTarget',
+        x: this.crown.targetX,
+        y: this.crown.targetY,
+        r: this.crown.radius,
+        progress: this.crown.hoverProgress,
+      });
+    }
+    list.push({
+      id: 'crown',
+      type: 'crown',
+      x: this.crown.x,
+      y: this.crown.y,
+      r: this.crown.radius,
+      floating: this.crown.dropped,
+      hovering: this.crown.state === 'hover',
+      altitude: this.crown.altitude ?? 0,
+    });
     return list;
   }
 }

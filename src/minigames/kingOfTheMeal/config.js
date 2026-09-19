@@ -26,17 +26,17 @@ export const defaultConfig = {
   ejectDistanceMin: 0.25,
   ejectDistanceMax: 0.33,
 
-  // ── Loose-crown drift (see KingOfTheMeal.updateDroppedCrown) ────────
-  // The crown floats like a feather rather than sitting still: slow
-  // travel with a sideways sway, punctuated by sudden veers so players
-  // can't just run a straight intercept.
-  driftSpeed: 55, // px/s, multiplied by chaos intensity
-  driftChangeMin: 0.7, // seconds between sudden direction changes
-  driftChangeMax: 1.8,
-  driftTurnMin: 0.8, // radians per veer (~45deg)
-  driftTurnMax: 2.2, // (~126deg) - big enough to feel abrupt
-  driftSwaySpeed: 3.2, // how fast the sideways sway oscillates
-  driftSwayAmount: 0.55, // how wide the sway is, relative to heading
+  // ── Loose crown: UFO flight, then landing ──────────────────────────
+  // The crown is UNTOUCHABLE while hovering and only grabbable once it
+  // has landed. See KingOfTheMeal.ejectCrown for the reasoning.
+  hoverSpeed: 420, // px/s in transit - fast, deliberately uncatchable
+  hoverMinDuration: 0.8, // floor, so short throws still read as a flight
+  hoverAltitude: 46, // peak visual height (renderer only)
+  hoverWobble: 26, // sideways sway in flight, for the UFO feel
+
+  landCandidates: 24, // sampled landing spots; best-scoring one wins
+  landMinDistance: 0.45, // min throw distance, as a fraction of the arena's
+  // shorter side - far enough that losing the crown means really losing it
 };
 
 export function buildKingOfTheMealConfig(globalConfig) {

@@ -27,7 +27,8 @@ export class OnlineMenu {
         <p class="subtitle">Up to ${MAX_PLAYERS} players. Empty seats are filled with bots.</p>
 
         <label class="online-field">Your name
-          <input type="text" id="online-name" maxlength="12" placeholder="Player" />
+          <input type="text" id="online-name" maxlength="20" placeholder="Your name" autocomplete="nickname" />
+          <span class="field-hint">Anything you like &mdash; accents, spaces and emoji all work.</span>
         </label>
 
         <button id="quick-btn">Quick Match</button>
@@ -84,6 +85,12 @@ export class OnlineMenu {
   }
 
   /** The waiting room: roster, share link, and a ready button. */
+  /** Shown when the server adjusted the submitted name, so the change is
+   * never silent. */
+  showNameNote(note) {
+    if (note) this.setStatus(note);
+  }
+
   showLobby(roomCode, players, onReady) {
     const shareUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
     this.root.style.display = 'flex';
@@ -97,6 +104,7 @@ export class OnlineMenu {
         </div>
         <ul id="lobby-players" class="lobby-list"></ul>
         <button id="ready-btn">I'm Ready</button>
+        <p class="countdown" id="lobby-countdown"></p>
         <p class="online-status" id="online-status">Waiting for everyone to be ready…</p>
       </div>
     `;
@@ -116,14 +124,36 @@ export class OnlineMenu {
       }
     });
 
+    // Ready is a toggle, not a commitment: the common case is readying up
+    // before realising nobody else has arrived yet.
     this.root.querySelector('#ready-btn').addEventListener('click', (e) => {
-      e.currentTarget.disabled = true;
-      e.currentTarget.textContent = 'Ready ✓';
+      this._ready = !this._ready;
+      e.currentTarget.textContent = this._ready ? "Ready ✓ (tap to cancel)" : "I'm Ready";
+      e.currentTarget.classList.toggle('secondary', this._ready);
       onReady?.();
     });
   }
 
-  updateLobby(players = []) {
+  /** @param {{startsIn: number|null, waitingForPlayers: boolean}} [status] */
+  updateLobby(players = [], status = {}) {
+    const countdownEl = this.root.querySelector('#lobby-countdown');
+    if (countdownEl) {
+      if (status.startsIn != null) {
+        countdownEl.textContent = `Starting in ${status.startsIn}…`;
+        countdownEl.classList.add('is-active');
+        // Say plainly that a solo start means bots, rather than letting
+        // someone discover it when the match begins.
+        this.setStatus(
+          status.waitingForPlayers
+            ? 'Waiting for others — empty seats will be filled with bots.'
+            : 'Everyone is ready!'
+        );
+      } else {
+        countdownEl.textContent = '';
+        countdownEl.classList.remove('is-active');
+      }
+    }
+
     const list = this.root.querySelector('#lobby-players');
     if (!list) return;
     const rows = players

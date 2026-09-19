@@ -52,6 +52,13 @@ export const GLOBAL_DEFAULTS = {
   // config.js (e.g. Organic Disposal runs a bit faster).
   movementDefaults: { acceleration: 950, maxSpeed: 250, friction: 0.92, softClamp: 0.55 },
 
+  /**
+   * Bot tuning. `reactionDelay` is how long a bot commits to a decision
+   * before re-evaluating - the single most effective knob for making
+   * bots beatable. 0 = frame-perfect and frankly unfair; 0.5 = sluggish.
+   */
+  bots: { reactionDelay: 0.22 },
+
   // See ChaosDirector.js for what each of these does.
   chaos: { graceTime: 6, rampRate: 0.18, maxMultiplier: 2.6, decayOnKill: 0.35 },
 

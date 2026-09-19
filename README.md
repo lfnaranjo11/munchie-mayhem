@@ -421,6 +421,60 @@ keep in sync. Any new minigame is network-ready with no extra work.
 Velocity isn't sent; the client derives it by differencing consecutive
 snapshots, which it buffers for interpolation anyway.
 
+### King of the Meal: the crown
+
+The loose crown is a **UFO**, not a drifting feather. Two states:
+
+- **Hovering** — in flight, **untouchable**, with its landing spot marked
+  on the ground the whole way.
+- **Landed** — sitting perfectly still, grabbable.
+
+This replaced a crown that drifted continuously at speed, which failed in
+three ways at once: whoever happened to be adjacent usually got it
+straight back; bots dominated, because a constantly-moving target rewards
+frame-perfect re-aiming; and online it was *uncatchable*, since a fast
+pickup is the worst case for interpolation — you see it ~70ms behind the
+server and grab at empty space.
+
+The UFO model fixes all three. Nothing to mis-grab in transit, the
+landing marker gives everyone the same information at the same moment, and
+a stationary target has no lag error. Landing spots are chosen by
+maximising distance to the nearest player, so the scramble starts roughly
+even, and are always clear of obstacles and at least 45% of the arena's
+short side from where the crown was lost.
+
+Knobs: `hoverSpeed`, `hoverMinDuration`, `hoverAltitude`, `landMinDistance`,
+`landCandidates` in `src/minigames/kingOfTheMeal/config.js`.
+
+### Lobby countdown
+
+Readying up no longer starts the match instantly. The first person into a
+room typically readies before anyone else arrives, which started a
+one-against-bots match. Now:
+
+- Alone: **25s** countdown, with the lobby stating plainly that empty
+  seats become bots.
+- Two or more players, all ready: **5s**.
+- A new arrival cancels the countdown (they aren't ready yet); ready is a
+  toggle, so you can un-ready.
+- A running countdown is never *extended* by a latecomer — otherwise one
+  person joining repeatedly could push back a start everyone is waiting on.
+
+### Names vs room codes
+
+These are different things and are treated differently:
+
+- **Names** are the player's own. Accents, spaces, emoji and non-Latin
+  scripts all work. Only two rules, both enforced for a reason: a 20
+  character cap so names fit above a character on a phone, and removal of
+  invisible characters (control codes, zero-width, bidi overrides) which
+  can spoof or break everyone else's lobby list. If anything is changed,
+  the player is told what and why.
+- **Room codes** stay restricted, because they get read aloud and
+  retyped — I, L and O are excluded so they can't be confused with 1 and
+  0. The input now explains this when it drops a character rather than
+  silently eating it.
+
 ### Online UX / connection states
 
 Multiplayer fails in ways single-player doesn't, so the client always says
@@ -499,6 +553,35 @@ Then set `SERVER_URL` in `config/network.config.js` to
 
 You can also point a local client at the deployed server without redeploying:
 `http://localhost:5173/?server=wss://your-service.run.app`
+
+#### Bandwidth is a real cost on metered hosts
+
+**A design caveat worth understanding.** The snapshot format (full
+drawable list, 30Hz) was chosen when the target was Cloudflare Durable
+Objects, where *outbound messages are free*. On Cloud Run, GCE, AWS or
+any other metered host, **egress is billed** — so the same design that
+costs nothing on Cloudflare costs real money elsewhere.
+
+Measured, 4 players:
+
+| | Per snapshot | Per day (continuous) | Egress @ $0.12/GB |
+|---|---|---|---|
+| Original | ~1.3 KB | 13.4 GB | ~$1.60/day |
+| Compressed + rounded | ~0.47 KB | 4.8 GB | ~$0.58/day |
+
+Two changes got that 73% reduction:
+- **permessage-deflate** on the WebSocket server. Snapshots are
+  repetitive JSON and deflate extremely well. Browsers negotiate it
+  automatically, so clients need no changes.
+- **Coordinate rounding** to one decimal. A raw float serializes as
+  `490.5109002426884` — 17 characters for precision the display can't
+  show and the client interpolates away regardless.
+
+If you need to go further: strip per-player constants (`characterId`,
+`fill`, `label`) from snapshots and have the client merge them from the
+`roundStart` roster it already receives; or drop the snapshot rate to
+20Hz and lean harder on interpolation. Both are meaningful, both cost
+some client complexity.
 
 #### Not burning money
 

@@ -48,7 +48,7 @@ export class TournamentManager extends EventBus {
     // one drives bot wandering, so tweaking bot behaviour later can't
     // accidentally shift which minigames get picked.
     this.masterRng = new RNG(rootSeed);
-    this.botBrain = new BotBrain(new RNG(rootSeed ^ 0x9e3779b9));
+    this.botBrain = new BotBrain(new RNG(rootSeed ^ 0x9e3779b9), globalConfig.bots);
 
     this.roundIndex = 0;
     this.enabledIds = enabledMinigames?.length ? enabledMinigames : Object.keys(MINIGAME_REGISTRY);
@@ -149,6 +149,8 @@ export class TournamentManager extends EventBus {
 
   update(dt, inputs) {
     if (this.phase !== 'playing') return;
+    // Advance bot decision timers on the fixed step (see BotBrain).
+    this.botBrain.advance(dt);
     this.currentMinigame.step(dt, inputs);
     if (this.currentMinigame.isFinished()) this.finishRound();
   }
