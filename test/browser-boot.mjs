@@ -104,4 +104,30 @@ const crash = window.document.querySelector('#crash-screen');
 console.log('crash screen visible:', crash?.style.display);
 if (crash && crash.style.display === 'flex') console.log('CRASH TEXT:', crash.textContent.slice(0, 600));
 if (errors.length) { console.log('\n=== ERRORS ==='); errors.slice(0,3).forEach(e => console.log(e.slice(0,900))); }
+// ---- Typing must never be swallowed by game input ----------------------
+// WASD/arrows/space/enter are movement keys. The global key handler used
+// to preventDefault() on them regardless of focus, so typing a name
+// containing "a", "s", "d" or "w" produced nothing at all.
+const nameInput = window.document.createElement('input');
+nameInput.type = 'text';
+window.document.body.appendChild(nameInput);
+
+const typedInField = new window.KeyboardEvent('keydown', { code: 'KeyA', bubbles: true, cancelable: true });
+nameInput.dispatchEvent(typedInField);
+assert.strictEqual(
+  typedInField.defaultPrevented,
+  false,
+  'typing a movement key into a text field must NOT be intercepted - this is what made names untypeable'
+);
+
+// ...but it must still be intercepted during actual play.
+const pressedInGame = new window.KeyboardEvent('keydown', { code: 'KeyA', bubbles: true, cancelable: true });
+window.document.body.dispatchEvent(pressedInGame);
+assert.strictEqual(
+  pressedInGame.defaultPrevented,
+  true,
+  'movement keys should still be captured when not typing'
+);
+console.log('✓ movement keys are ignored while typing, captured during play');
+
 console.log('\n✓ app boots, starts a round, and renders characters to the canvas');

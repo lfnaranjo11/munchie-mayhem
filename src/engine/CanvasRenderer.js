@@ -265,6 +265,116 @@ export class CanvasRenderer {
     ctx.fillRect(d.x - 3, d.y - 22, 6, 10);
   }
 
+  // ---- Sauce Splash ------------------------------------------------------
+  /**
+   * The painted board.
+   *
+   * Drawn as horizontal RUNS rather than one rect per cell: a 44x25 grid
+   * is 1,100 cells, and filling each individually every frame is a lot of
+   * canvas calls for what is usually a handful of large blocks of colour.
+   * Coalescing consecutive same-owner cells in a row typically cuts it to
+   * a few dozen draws.
+   */
+  draw_paintGrid(d) {
+    const { ctx } = this;
+    const data = d.data;
+    for (let row = 0; row < d.rows; row++) {
+      let col = 0;
+      while (col < d.cols) {
+        const owner = data.charCodeAt(row * d.cols + col) - 48;
+        if (owner <= 0) {
+          col++;
+          continue;
+        }
+        let run = 1;
+        while (col + run < d.cols && data.charCodeAt(row * d.cols + col + run) - 48 === owner) run++;
+        ctx.fillStyle = d.colors[owner] ?? '#ccc';
+        ctx.globalAlpha = 0.55;
+        ctx.fillRect(col * d.cellW, row * d.cellH, run * d.cellW + 0.5, d.cellH + 0.5);
+        col += run;
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  draw_paintJar(d) {
+    const { ctx } = this;
+    const t = performance.now() / 1000;
+    const bob = Math.sin(t * 3 + d.x * 0.01) * 3;
+
+    ctx.save();
+    ctx.translate(0, bob);
+    // Halo so a jar stays findable against heavily painted ground.
+    ctx.globalAlpha = 0.35 + Math.sin(t * 5) * 0.15;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r * 1.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Jar body
+    ctx.fillStyle = '#f3f0e6';
+    ctx.strokeStyle = 'rgba(80,55,35,0.5)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(d.x - d.r * 0.7, d.y - d.r * 0.8, d.r * 1.4, d.r * 1.7, 4);
+    else ctx.rect(d.x - d.r * 0.7, d.y - d.r * 0.8, d.r * 1.4, d.r * 1.7);
+    ctx.fill();
+    ctx.stroke();
+    // Contents + lid
+    ctx.fillStyle = '#ff6b57';
+    ctx.fillRect(d.x - d.r * 0.5, d.y - d.r * 0.1, d.r, d.r * 0.85);
+    ctx.fillStyle = '#c0392b';
+    ctx.fillRect(d.x - d.r * 0.8, d.y - d.r, d.r * 1.6, d.r * 0.35);
+    ctx.restore();
+  }
+
+  /**
+   * The who-owns-what bar. A single stacked bar rather than separate
+   * per-player bars, because the question players actually ask is "am I
+   * ahead?", which a shared bar answers at a glance.
+   */
+  draw_coverageBar(d) {
+    const { ctx } = this;
+    const left = d.x - d.width / 2;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(70,50,35,0.3)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(left - 3, d.y - 3, d.width + 6, d.height + 6, 12);
+    else ctx.rect(left - 3, d.y - 3, d.width + 6, d.height + 6);
+    ctx.fill();
+
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(left, d.y, d.width, d.height, 9);
+    else ctx.rect(left, d.y, d.width, d.height);
+    ctx.clip();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillRect(left, d.y, d.width, d.height);
+
+    let cursor = left;
+    for (const entry of d.entries) {
+      const w = d.width * entry.frac;
+      if (w <= 0) continue;
+      ctx.fillStyle = entry.color;
+      ctx.fillRect(cursor, d.y, w, d.height);
+      // Percentage inside its own segment, but only when there's room -
+      // a label wider than its segment reads as belonging to a neighbour.
+      if (w > 34) {
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.font = '700 12px "Nunito", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${Math.round(entry.frac * 100)}%`, cursor + w / 2, d.y + d.height / 2);
+      }
+      cursor += w;
+    }
+    ctx.restore();
+    ctx.restore();
+  }
+
   // ---- King of the Meal ------------------------------------------------
   /** Where a hovering crown is going to land. This marker is the whole
    * reason the race is fair: every player gets the same information at
@@ -388,32 +498,102 @@ export class CanvasRenderer {
   }
 
   // ---- Ketchin' Up beam --------------------------------------------------
-  /** `live: false` renders a dim telegraph line during the beam's "off"
-   * pulse - visible, but visibly harmless. */
+  /**
+   * The beam. Two visually distinct states, because the difference
+   * between them is the entire game:
+   *   charging - a thin dashed line that thickens as it charges. Clearly
+   *              marks where the shot will land without looking lethal.
+   *   firing   - thick, bright, glowing. Unmistakably deadly.
+   * (During cooldown the minigame emits no beam drawable at all.)
+   */
   draw_beam(d) {
     const { ctx } = this;
+    ctx.lineCap = 'round';
+
     if (d.live) {
+      // Outer glow, then the core - reads as hot rather than as a line.
+      ctx.strokeStyle = 'rgba(255,90,70,0.35)';
+      ctx.lineWidth = d.width * 2.2;
+      ctx.beginPath();
+      ctx.moveTo(d.x1, d.y1);
+      ctx.lineTo(d.x2, d.y2);
+      ctx.stroke();
+
       ctx.strokeStyle = '#ff2d2d';
       ctx.lineWidth = d.width;
       ctx.shadowColor = '#ff8080';
-      ctx.shadowBlur = 12;
-    } else {
-      ctx.strokeStyle = 'rgba(255,45,45,0.35)';
-      ctx.lineWidth = Math.max(2, d.width * 0.4);
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.moveTo(d.x1, d.y1);
+      ctx.lineTo(d.x2, d.y2);
+      ctx.stroke();
+
       ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = Math.max(2, d.width * 0.32);
+      ctx.beginPath();
+      ctx.moveTo(d.x1, d.y1);
+      ctx.lineTo(d.x2, d.y2);
+      ctx.stroke();
+      return;
     }
-    ctx.lineCap = 'round';
+
+    // Charging: thickens and brightens as the shot approaches, so how
+    // long you have left is readable from the line itself.
+    const charge = Math.max(0, Math.min(1, d.charge ?? 0));
+    const t = performance.now() / 1000;
+    ctx.setLineDash([10, 9]);
+    ctx.lineDashOffset = -t * 40;
+    ctx.strokeStyle = `rgba(255,70,60,${0.28 + charge * 0.5})`;
+    ctx.lineWidth = Math.max(2, d.width * (0.25 + charge * 0.45));
     ctx.beginPath();
     ctx.moveTo(d.x1, d.y1);
     ctx.lineTo(d.x2, d.y2);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
 
+  /** The cannon. Its colour and the ring around it announce which beat of
+   * the cycle we're in, so the state is readable even when the beam
+   * itself is invisible. */
   draw_emitter(d) {
     const { ctx } = this;
-    ctx.fillStyle = '#c0392b';
+    const t = performance.now() / 1000;
+
+    if (d.phase === 'charge') {
+      // Tightening ring = winding up.
+      ctx.strokeStyle = 'rgba(255,70,60,0.75)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 24 + Math.sin(t * 12) * 4, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (d.phase === 'moving') {
+      // Motion puffs, so a repositioning cannon reads as travelling
+      // rather than teleporting.
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      for (let i = 1; i <= 3; i++) {
+        const a = (d.angle ?? 0) + Math.PI;
+        ctx.beginPath();
+        ctx.arc(d.x + Math.cos(a) * i * 13, d.y + Math.sin(a) * i * 13, 7 - i * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Body, tinted by state: bright red only when actually dangerous.
+    ctx.fillStyle = d.phase === 'fire' ? '#ff2d2d' : d.phase === 'charge' ? '#c0392b' : '#8d6e63';
     ctx.beginPath();
     ctx.arc(d.x, d.y, 18, 0, Math.PI * 2);
     ctx.fill();
+
+    // Nozzle showing which way it's aiming.
+    if (typeof d.angle === 'number') {
+      ctx.strokeStyle = 'rgba(60,40,25,0.65)';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x + Math.cos(d.angle) * 24, d.y + Math.sin(d.angle) * 24);
+      ctx.stroke();
+    }
   }
 }

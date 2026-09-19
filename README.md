@@ -129,7 +129,8 @@ system - see [Architecture tour](#architecture-tour) below.
 | **Organic Disposal** | `organicDisposal/OrganicDisposal.js` | Food drifts in from the right and bounces/drags you depending on impact angle; a grinder wall on the left eliminates players *and* grinds up any hazard that reaches it; a gentle constant current keeps pulling everyone toward it |
 | **Pepper to Die** | `pepperToDie/PepperToDie.js` | Bouncy chocolate vs. static milk obstacles; grabbing the pepper makes you a faster juggernaut that instantly eliminates anyone you touch but dies itself if its timer runs out; an unclaimed pepper starts *hunting* the nearest player after a few seconds so the round can't stall |
 | **Exploding Fruits** | `explodingFruits/ExplodingFruits.js` | A bomb suddenly marks a random player (nothing you press triggers it), briefly tracks them, then arms in place; run clear before it detonates; explosions leave permanent craters that are lethal to fall into, so the safe area only shrinks over a round |
-| **Ketchin' Up** | `ketchinUp/KetchinUp.js` | A rotating ketchup-beam emitter; chocolate obstacles block it until struck, then launch away (harmless bounce, not lethal); the beam pulses on/off early on (real gaps to escape through) and becomes steadily more continuous and faster across three phases - rotate, translate-and-rotate, orbit-everything - shuffled into a random order each round, with a randomized obstacle layout each time too |
+| **Ketchin' Up** | `ketchinUp/KetchinUp.js` | A ketchup cannon on a **charge → fire → cool** rhythm. Charging shows a harmless dashed line marking exactly where it will fire; firing is lethal but sweeps slowly enough to outrun; cooldown turns the beam off entirely. Every 3 cycles it **repositions** with the beam off, dashing across the board. Chocolate blocks the beam until struck, then launches (harmless to touch). |
+| **Sauce Splash** | `sauceSplash/SauceSplash.js` | Territory painting: run around to paint the board in your colour, painting over someone else steals their ground; sauce jars grant a wider brush and a speed boost; most coverage when the timer ends wins. Score-based, nobody is eliminated. |
 | **King of the Meal** | `kingOfTheMeal/KingOfTheMeal.js` | Classic king-of-the-hill: the crown starts on the ground, not on a player, so everyone races for it; holding it scores continuously; getting touched drops it; the arena is 10% bigger and denser with obstacles for chase lines; as the pace ramps up the crown starts fumbling off the holder on its own, with more launch force the faster things get |
 
 The **tournament wrapper** (`src/tournament/TournamentManager.js`) picks a
@@ -420,6 +421,31 @@ list *is* the wire format — no separate serialization layer to write and
 keep in sync. Any new minigame is network-ready with no extra work.
 Velocity isn't sent; the client derives it by differencing consecutive
 snapshots, which it buffers for interpolation anyway.
+
+### Ketchin' Up: rhythm over speed
+
+The first version spun the beam continuously and fast with a short blink.
+It was boring in a specific way: **danger everywhere all the time means no
+moment to breathe, no decision to make, and nothing to anticipate.** Threat
+with no release stops registering as threat.
+
+The rebuild is a three-beat cycle plus a repositioning dash:
+
+| Beat | Lethal? | What it's for |
+|---|---|---|
+| Charge (1.0s) | No | A dashed line marks exactly where the shot will land. The telegraph is the fun part. |
+| Fire (1.15s) | **Yes** | Short, and slow enough to read and outrun. |
+| Cool (1.9s) | No | Beam completely off. Move to better cover, or shove someone out of theirs. |
+| Reposition (every 3 cycles) | No | Beam off, cannon dashes across the board. The one genuinely safe beat. |
+
+Measured over 60 simulated seconds: **50% beam-off, 23% telegraph, 27%
+lethal**, sweeping **34°/s** while firing, with the cannon travelling
+~2.5 arena widths.
+
+Tuning note: if it starts feeling too easy, shorten `beam.coolTime`
+before touching `rotation.baseSpeed`. Taking away the rest beats bites
+much harder than spinning faster — and spinning faster is exactly what
+made the original tedious.
 
 ### King of the Meal: the crown
 

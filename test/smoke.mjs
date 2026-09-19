@@ -18,6 +18,7 @@ import { TournamentManager } from '../src/tournament/TournamentManager.js';
 import { resolveDeviceProfile, applyInputOverride } from '../src/core/deviceProfile.js';
 import { CompositeInput } from '../src/core/CompositeInput.js';
 import { resolveArena } from '../src/core/arenaFit.js';
+import { CanvasRenderer } from '../src/engine/CanvasRenderer.js';
 import { easeOutQuad, easeOutBack, easeOutElastic, easeOutBounce, stepSpring, approach } from '../src/engine/anim/easing.js';
 import { ParticleSystem, ScreenShake } from '../src/engine/anim/ParticleSystem.js';
 import { resolveExpression, EXPRESSION } from '../src/engine/anim/VisualState.js';
@@ -483,6 +484,341 @@ function testCrownNeverStuck() {
  * leaks would both show up as a gradually degrading frame rate rather
  * than an obvious crash.
  */
+/**
+ * Sauce Splash keeps running coverage totals instead of scanning the grid
+ * each frame (a full scan would be ~1000 cells x 60fps x players). That's
+ * the right call for performance, but incremental accounting is exactly
+ * the kind of thing that drifts silently - a missed decrement would show
+ * up only as a percentage bar that slowly stops adding up. So: verify the
+ * totals against a real count of the grid.
+ */
+function testSauceSplashCoverage() {
+  const def = MINIGAME_REGISTRY.sauceSplash;
+  const config = def.buildConfig(GLOBAL_DEFAULTS);
+  const arena = {
+    width: GLOBAL_DEFAULTS.arena.width * (config.arenaScale ?? 1),
+    height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
+  };
+  const players = [0, 1, 2, 3].map((i) =>
+    createPlayer({ x: 150 + i * 180, y: 130 + i * 80, name: `P${i}` })
+  );
+  const mg = new def.MinigameClass({
+    players,
+    arena,
+    rng: new RNG(5),
+    chaos: new ChaosDirector(GLOBAL_DEFAULTS.chaos),
+    config,
+    bus: null,
+  });
+  mg.start();
+
+  const rng = new RNG(77);
+  for (let frame = 0; frame < 2400; frame++) {
+    const inputs = {};
+    for (const p of players) {
+      // Smooth wandering rather than per-frame noise, so players actually
+      // travel and paint (random input every frame just jitters in place).
+      const a = rng.range(0, Math.PI * 2) * 0.03 + frame * 0.01 + players.indexOf(p);
+      inputs[p.id] = { x: Math.cos(a), y: Math.sin(a) };
+    }
+    mg.step(1 / 60, inputs);
+
+    if (frame % 400 === 0) {
+      // Recount from scratch and compare with the running totals.
+      const actual = new Array(players.length + 1).fill(0);
+      for (const owner of mg.grid) actual[owner] += 1;
+      assert.deepStrictEqual(
+        Array.from(mg.counts),
+        actual,
+        `frame ${frame}: running coverage totals drifted from the real grid`
+      );
+    }
+    if (mg.isFinished()) break;
+  }
+
+  const sum = mg.counts.reduce((a, b) => a + b, 0);
+  assert.strictEqual(sum, mg.totalCells, 'every cell must be accounted for exactly once');
+
+  const coverage = mg.getCoverage();
+  const painted = [...coverage.values()].reduce((a, b) => a + b, 0);
+  assert.ok(painted > 0.25, `players should have painted a meaningful area, got ${(painted * 100).toFixed(1)}%`);
+  assert.ok(painted <= 1.0001, 'total coverage cannot exceed the whole board');
+
+  // A jar boost must actually widen the brush.
+  const target = players[0];
+  target.roundState.boost = 0;
+  const before = mg.counts[mg.playerIndex.get(target.id)];
+  target.x = arena.width * 0.5;
+  target.y = arena.height * 0.5;
+  mg.paintAround(target, config.brushRadius);
+  const normal = mg.counts[mg.playerIndex.get(target.id)] - before;
+  target.x = arena.width * 0.2;
+  target.y = arena.height * 0.8;
+  const beforeBoost = mg.counts[mg.playerIndex.get(target.id)];
+  mg.paintAround(target, config.brushRadius * config.jar.brushMultiplier);
+  const boosted = mg.counts[mg.playerIndex.get(target.id)] - beforeBoost;
+  assert.ok(boosted > normal, `a boosted brush should paint more (${boosted} vs ${normal})`);
+
+  // The winner must be whoever actually owns the most ground.
+  const result = mg.getResult();
+  let best = null;
+  let bestOwned = -1;
+  for (const p of players) {
+    const owned = mg.counts[mg.playerIndex.get(p.id)];
+    if (owned > bestOwned) {
+      bestOwned = owned;
+      best = p;
+    }
+  }
+  assert.deepStrictEqual(result.winners, [best.id], 'the player owning the most ground should win');
+
+  console.log(
+    `\u2713 sauce splash: coverage totals stay exact (${(painted * 100).toFixed(0)}% painted), boost widens brush, winner = most ground`
+  );
+}
+
+/**
+ * Every drawable a minigame emits must have a renderer, and every
+ * coordinate must be a real number.
+ *
+ * WHY THIS EXISTS: mutation testing showed that renaming a drawable type
+ * (say `bomb` -> `bomb_TYPO`) passed every single test. CanvasRenderer
+ * falls back to a generic grey circle for unknown types, so bombs would
+ * silently render as featureless blobs and nothing would fail. That is
+ * precisely the class of bug that kept reaching the user: the simulation
+ * is perfect, the screen is wrong, and the suite is green.
+ *
+ * Checking against CanvasRenderer.prototype needs no canvas, so this
+ * stays a pure Node test.
+ */
+function testDrawableContract() {
+  const missing = new Map();
+  const nonFinite = [];
+  let checked = 0;
+
+  for (const id of Object.keys(MINIGAME_REGISTRY)) {
+    const def = MINIGAME_REGISTRY[id];
+    const config = def.buildConfig(GLOBAL_DEFAULTS);
+    const arena = {
+      width: GLOBAL_DEFAULTS.arena.width * (config.arenaScale ?? 1),
+      height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
+    };
+    const players = [0, 1, 2, 3].map((i) =>
+      createPlayer({ x: 120 + i * 150, y: 120 + i * 70, name: `P${i}` })
+    );
+    const mg = new def.MinigameClass({
+      players,
+      arena,
+      rng: new RNG(9),
+      chaos: new ChaosDirector(GLOBAL_DEFAULTS.chaos),
+      config,
+      bus: null,
+    });
+    mg.start();
+
+    const rng = new RNG(4);
+    // Sample across the whole round, so states that only appear later
+    // (a firing beam, a hovering crown, craters) are covered too.
+    for (let frame = 0; frame < 3000; frame++) {
+      const inputs = {};
+      for (const p of players) {
+        const a = frame * 0.02 + players.indexOf(p) * 1.7;
+        inputs[p.id] = { x: Math.cos(a), y: Math.sin(a) };
+      }
+      mg.step(1 / 60, inputs);
+
+      if (frame % 25 !== 0) continue;
+      for (const d of mg.getDrawables()) {
+        checked++;
+        if (typeof CanvasRenderer.prototype[`draw_${d.type}`] !== 'function') {
+          missing.set(d.type, id);
+        }
+        for (const [key, value] of Object.entries(d)) {
+          if (typeof value === 'number' && !Number.isFinite(value)) {
+            nonFinite.push(`${id}: ${d.type}.${key} = ${value}`);
+          }
+        }
+      }
+      if (mg.isFinished()) break;
+    }
+  }
+
+  assert.strictEqual(
+    missing.size,
+    0,
+    `drawable types with no draw_ method (they render as anonymous grey circles): ${[...missing.entries()].map(([t, g]) => `${t} (from ${g})`).join(', ')}`
+  );
+  assert.strictEqual(nonFinite.length, 0, `non-finite drawable values: ${nonFinite.slice(0, 5).join('; ')}`);
+  console.log(`\u2713 all ${checked} sampled drawables have a renderer and finite coordinates`);
+}
+
+/**
+ * The crown's landing spot must be chosen clear of obstacles.
+ *
+ * The existing crown test checked the FINAL position, which
+ * `_settleCrown()` fixes up afterwards - so deleting the obstacle check
+ * inside pickLandingSpot passed every test. Testing the chosen spot
+ * directly, before the safety net runs, is what actually pins the
+ * behaviour down.
+ */
+function testCrownLandingSpotIsChosenClear() {
+  const def = MINIGAME_REGISTRY.kingOfTheMeal;
+  const config = def.buildConfig(GLOBAL_DEFAULTS);
+  const arena = {
+    width: GLOBAL_DEFAULTS.arena.width * (config.arenaScale ?? 1),
+    height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
+  };
+  const players = [0, 1].map((i) => createPlayer({ x: 200 + i * 300, y: 200, name: `P${i}` }));
+  const mg = new def.MinigameClass({
+    players,
+    arena,
+    rng: new RNG(21),
+    chaos: new ChaosDirector(GLOBAL_DEFAULTS.chaos),
+    config,
+    bus: null,
+  });
+  mg.start();
+
+  let blocked = 0;
+  for (let i = 0; i < 300; i++) {
+    const from = { x: 80 + ((i * 53) % (arena.width - 160)), y: 80 + ((i * 37) % (arena.height - 160)) };
+    const spot = mg.pickLandingSpot(from);
+    if (mg._isBlocked(spot.x, spot.y)) blocked++;
+  }
+  assert.strictEqual(blocked, 0, `pickLandingSpot returned ${blocked}/300 spots inside an obstacle`);
+  console.log('\u2713 crown landing spots are chosen clear of obstacles (not just fixed up afterwards)');
+}
+
+/**
+ * Drives each minigame into its CONDITIONAL states and validates the
+ * drawables there.
+ *
+ * WHY: mutation testing showed a NaN injected into Pepper to Die's
+ * hunting-pepper code passed every test. That branch only runs after the
+ * pepper has sat unclaimed for several seconds - which never happened in
+ * the other tests, because wandering players grab it almost immediately.
+ * A test that samples "whatever states it happens to reach" silently
+ * covers only the easy paths.
+ *
+ * So this pins the players out of the way to force the timed branches,
+ * and then ASSERTS each interesting state was actually observed - if a
+ * state stops being reachable, this fails rather than quietly covering
+ * less.
+ */
+function testConditionalStateDrawables() {
+  // minigame id -> { states: {name -> predicate}, provoke?: (mg, frame) => void }
+  // `provoke` forces states that pinned players can never trigger on
+  // their own - the crown only flies when somebody steals it, and nobody
+  // steals anything while parked in a corner.
+  const STATES = {
+    pepperToDie: {
+      'pepper hunting': (mg) => mg.pepper?.state === 'hunting',
+    },
+    kingOfTheMeal: {
+      'crown hovering': (mg) => mg.crown?.state === 'hover',
+      'crown landed': (mg) => mg.crown?.state === 'landed',
+    },
+    ketchinUp: {
+      'beam firing': (mg) => !mg.repositioning && mg.beamPhase === 'fire',
+      'beam charging': (mg) => !mg.repositioning && mg.beamPhase === 'charge',
+      'cannon repositioning': (mg) => mg.repositioning === true,
+    },
+    explodingFruits: {
+      'bomb armed': (mg) => mg.bombs?.some((b) => b.phase === 'armed'),
+      'crater left behind': (mg) => mg.craters?.length > 0,
+    },
+    organicDisposal: {
+      'hazard in play': (mg) => mg.hazards?.length > 0,
+    },
+    sauceSplash: {
+      'jar available': (mg) => mg.jars?.length > 0,
+    },
+  };
+
+  const nonFinite = [];
+
+  // Forces states unreachable from a pinned-player simulation.
+  const PROVOKE = {
+    kingOfTheMeal: (mg, frame) => {
+      // Throw the crown periodically so both flight and landing are seen.
+      if (frame % 240 === 60) mg.ejectCrown({ x: mg.arena.width / 2, y: mg.arena.height / 2 });
+    },
+  };
+
+  for (const [id, states] of Object.entries(STATES)) {
+    const def = MINIGAME_REGISTRY[id];
+    const config = def.buildConfig(GLOBAL_DEFAULTS);
+    const arena = {
+      width: GLOBAL_DEFAULTS.arena.width * (config.arenaScale ?? 1),
+      height: GLOBAL_DEFAULTS.arena.height * (config.arenaScale ?? 1),
+    };
+    const players = [0, 1, 2, 3].map((i) => createPlayer({ x: 60 + i * 26, y: 60, name: `P${i}` }));
+    const mg = new def.MinigameClass({
+      players,
+      arena,
+      rng: new RNG(31),
+      chaos: new ChaosDirector(GLOBAL_DEFAULTS.chaos),
+      config,
+      bus: null,
+    });
+    mg.start();
+
+    const seen = new Set();
+    // Per-minigame, NOT shared: a shared accumulator meant one minigame's
+    // NaN aborted every later minigame on frame 0, which then failed with
+    // a misleading "never reached state X" instead of the real cause.
+    const localNonFinite = [];
+    for (let frame = 0; frame < 60 * 40; frame++) {
+      // Pin the players in a corner with no input. This is what forces
+      // the timed branches: nobody grabs the pickup, nobody dies, and the
+      // "if this sits unclaimed" paths finally execute.
+      const inputs = {};
+      for (let i = 0; i < players.length; i++) {
+        const p = players[i];
+        p.x = 60 + i * 26;
+        p.y = 60;
+        p.vx = 0;
+        p.vy = 0;
+        p.alive = true;
+        inputs[p.id] = { x: 0, y: 0 };
+      }
+      PROVOKE[id]?.(mg, frame);
+      mg.update(1 / 60, inputs);
+
+      for (const [name, predicate] of Object.entries(states)) {
+        if (predicate(mg)) seen.add(name);
+      }
+
+      for (const d of mg.getDrawables()) {
+        for (const [key, value] of Object.entries(d)) {
+          if (typeof value === 'number' && !Number.isFinite(value)) {
+            localNonFinite.push(`${id}: ${d.type}.${key} = ${value} (frame ${frame})`);
+          }
+        }
+      }
+      if (localNonFinite.length) break;
+    }
+
+    nonFinite.push(...localNonFinite);
+    // Only meaningful if this minigame ran to completion; a NaN abort
+    // legitimately cuts the run short.
+    if (localNonFinite.length === 0)
+      for (const name of Object.keys(states)) {
+      assert.ok(
+        seen.has(name),
+        `${id}: never reached the "${name}" state - this test is no longer covering that branch`
+      );
+    }
+  }
+
+  assert.strictEqual(
+    nonFinite.length,
+    0,
+    `non-finite values in conditional states: ${nonFinite.slice(0, 3).join('; ')}`
+  );
+  console.log('\u2713 conditional states (hunting pepper, hovering crown, firing beam, craters...) all reached and finite');
+}
+
 testRNGDeterminism();
 testEachMinigameRunsHeadless();
 testStartedFlagTiming();
@@ -491,6 +827,10 @@ testCompositeInput();
 testArenaFit();
 testCrownEject();
 testCrownNeverStuck();
+testSauceSplashCoverage();
+testDrawableContract();
+testConditionalStateDrawables();
+testCrownLandingSpotIsChosenClear();
 testAnimationMath();
 testParticlePool();
 testExpressionPriority();

@@ -34,7 +34,7 @@ import { resolveServerURL } from '../config/network.config.js';
  * copy or a cached module graph otherwise looks identical to a bug, which
  * has cost real debugging time on this project already.
  */
-const BUILD = 'v0.8.0 - arena frame, UFO crown, free names, lobby countdown';
+const BUILD = 'v0.11.0 - typing fix (movement keys no longer swallow text input)';
 
 class App {
   constructor() {

@@ -393,7 +393,9 @@ export class KingOfTheMeal extends MinigameBase {
   }
 
   getDrawables() {
-    const list = this.obstacles.map((o) => ({ type: 'blob', x: o.x, y: o.y, r: o.radius, fill: '#7fbf6a', face: false }));
+    // Stable ids even though these never move: it keeps the invariant
+    // "every blob drawable has an id" simple and machine-checkable.
+    const list = this.obstacles.map((o, i) => ({ id: `obs_${i}`, type: 'blob', x: o.x, y: o.y, r: o.radius, fill: '#7fbf6a', face: false }));
     for (const p of this.getAlivePlayers()) {
       list.push({
         type: 'blob',

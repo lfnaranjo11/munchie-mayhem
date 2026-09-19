@@ -112,6 +112,16 @@ class TestClient {
   }
 }
 
+/**
+ * Progress logging. This suite takes ~20-25s because it plays real
+ * matches in real time (waiting on lobby countdowns, a 3s lag-takeover
+ * timeout, and so on). Without output during those waits it looks
+ * exactly like a hang, so every phase announces itself and how long it
+ * expects to take.
+ */
+const T0 = Date.now();
+const step = (msg) => console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${msg}`);
+
 async function main() {
   // Start the real server as a child process, exactly as it would run.
   const server = spawn(process.execPath, ['server/node-server.mjs'], {
@@ -169,6 +179,7 @@ async function main() {
 
     // Drive input at the protocol rate for a while.
     const inputTimer = setInterval(() => clients.forEach((c) => c.sendInput()), 50);
+    step('playing a real match for ~9s (snapshots streaming)...');
     await sleep(9000);
 
     assert.ok(clients[0].rounds.length >= 1, 'a round should have started');
@@ -302,6 +313,7 @@ async function main() {
     // The bug: the first person into a room readies up before anyone else
     // has arrived, and the match began immediately, one-against-bots.
     const solo = new TestClient('Solo', { x: 1, y: 0 });
+    step('checking the solo lobby countdown (~1s)...');
     await solo.connect({ roomCode: generateRoomCode() });
     solo.ready();
     await sleep(900);
@@ -343,6 +355,7 @@ async function main() {
     // duo[1] simply stops sending input (simulating a lag spike or an AFK
     // player). The server should hand their character to a bot so the
     // match doesn't play out around a statue, then give it back.
+    step('waiting ~5s for the lag-takeover timeout to trigger...');
     const takeoverTimer = setInterval(() => duo[0].sendInput(), 60);
     await sleep(5000);
 
@@ -364,7 +377,7 @@ async function main() {
     duo.forEach((c) => c.close());
     await sleep(200);
 
-    console.log('\nAll network tests passed.');
+    console.log(`\nAll network tests passed in ${((Date.now() - T0) / 1000).toFixed(1)}s.`);
   } finally {
     server.kill();
   }

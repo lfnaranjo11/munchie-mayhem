@@ -16,6 +16,8 @@ import { KetchinUp } from './ketchinUp/KetchinUp.js';
 import { buildKetchinUpConfig } from './ketchinUp/config.js';
 import { KingOfTheMeal } from './kingOfTheMeal/KingOfTheMeal.js';
 import { buildKingOfTheMealConfig } from './kingOfTheMeal/config.js';
+import { SauceSplash } from './sauceSplash/SauceSplash.js';
+import { buildSauceSplashConfig } from './sauceSplash/config.js';
 
 export const MINIGAME_REGISTRY = {
   organicDisposal: {
@@ -57,6 +59,19 @@ export const MINIGAME_REGISTRY = {
     instructions: ['Avoid the ketchup beam!', 'Hide behind the chocolate - once struck, it goes flying (but stays harmless to touch).', 'Only the beam itself is lethal.'],
     MinigameClass: KetchinUp,
     buildConfig: buildKetchinUpConfig,
+  },
+  sauceSplash: {
+    id: 'sauceSplash',
+    title: 'Sauce Splash',
+    icon: '🎨',
+    instructions: [
+      'Run around to paint the board in your colour.',
+      'Painting over someone else steals that ground from them.',
+      'Grab sauce jars for a wider brush and a speed boost.',
+      'Most of the board when the timer ends wins!',
+    ],
+    MinigameClass: SauceSplash,
+    buildConfig: buildSauceSplashConfig,
   },
   kingOfTheMeal: {
     id: 'kingOfTheMeal',
